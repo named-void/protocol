@@ -1,0 +1,4 @@
+interface:
+  display_name: "Самостоятельная работа"
+  short_description: "Цель, durable-чекпоинты и самостоятельные решения"
+  default_prompt: "| Доведи задачу до проверяемой цели."

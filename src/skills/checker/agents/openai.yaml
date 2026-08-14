@@ -1,0 +1,4 @@
+interface:
+  display_name: "Checker"
+  short_description: "Независимая проверка результата и findings"
+  default_prompt: "Используй $checker для независимой проверки зафиксированного результата."

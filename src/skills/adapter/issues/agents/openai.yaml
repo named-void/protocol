@@ -1,0 +1,4 @@
+interface:
+  display_name: "Issue tracker"
+  short_description: "Адаптер трекера задач: чтение, поиск, статусные переходы"
+  default_prompt: "Прочитай задачу: "

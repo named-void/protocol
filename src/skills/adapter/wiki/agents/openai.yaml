@@ -1,0 +1,4 @@
+interface:
+  display_name: "Docs wiki"
+  short_description: "Адаптер wiki-документации: чтение страниц, поиск, версии, spec-дискавери"
+  default_prompt: "Найди спецификацию: "

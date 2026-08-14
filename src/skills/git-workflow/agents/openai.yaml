@@ -1,0 +1,4 @@
+interface:
+  display_name: "Git workflow"
+  short_description: "Ветки, worktree, index и локальная приёмка"
+  default_prompt: "Используй $git-workflow для безопасной локальной Git-операции."

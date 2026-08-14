@@ -1,0 +1,18 @@
+# Конфигурация координатора protocol. Проектный fallback находится в
+# `<projects-root>/_common/project.toml`; эта карта не участвует в выборе
+# периметра.
+
+# Состав маршрута читает только координирующая сессия. Первый fleet-участник —
+# fallback single-этапа; в multiple native-профиль заменяет его, а выбранный
+# состав запускается параллельно.
+[main_subagent]
+fleet_executors = [
+    "codex:gpt-5.6-terra:medium",
+    "kilo:openrouter/deepseek/deepseek-v4-flash-0731",
+]
+
+[main_subagent.codex]
+agent_type = "luna"
+
+[main_subagent.kilo]
+agent_type = "general"

@@ -1,0 +1,4 @@
+interface:
+  display_name: "MR Reviewer"
+  short_description: "Ревью GitLab MR по локальному checkout"
+  default_prompt: "Используй $mreviewer для ревью GitLab MR по указанному URL."

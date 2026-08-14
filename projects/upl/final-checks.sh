@@ -1,0 +1,329 @@
+#!/usr/bin/env bash
+# Финальные проверки сервиса на базе шаблона templ-service.
+# Живёт в carrier `protocol/projects/upl`; запускать из корня сервисного repo.
+# Сервис-специфика берется из окружения: SERVICE_ROOT (git toplevel), configs/.env и .env,
+# DB_CONTAINER для нестандартного имени контейнера БД.
+set -u
+
+SERVICE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+# Сам скрипт лежит в git-репозитории проектного слоя, поэтому git-toplevel сервис
+# не опознаёт: запуск из каталога скрипта дал бы проверку чужого дерева с
+# правдоподобными сигналами. Признак сервиса — go.mod в корне.
+if [[ ! -f "$SERVICE_ROOT/go.mod" ]]; then
+  printf 'блокер: %s не сервисный репозиторий (go.mod в корне не найден) — запускай из корня сервиса\n' "$SERVICE_ROOT" >&2
+  exit 99
+fi
+# Имя сервиса — из основного рабочего дерева репозитория, а не из каталога
+# worktree: в worktree задачи basename даёт имя каталога (probe-736), и кандидат
+# ${SERVICE_NAME}-db никогда не совпадает с контейнером стенда (SB-118).
+SERVICE_MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || printf '%s/.git' "$SERVICE_ROOT")")"
+SERVICE_NAME="$(basename "$SERVICE_MAIN_ROOT")"
+LOG_DIR="${TMPDIR:-/tmp}/${SERVICE_NAME}-final-checks-$(date +%Y%m%d%H%M%S)-$$"
+SUMMARY_FILE="$LOG_DIR/summary.txt"
+CHANGED_FILE="$LOG_DIR/changed-files.txt"
+STATUS_FILE="$LOG_DIR/git-status.txt"
+
+mkdir -p "$LOG_DIR"
+cd "$SERVICE_ROOT" || exit 99
+export PATH="$(go env GOPATH)/bin:$PATH"
+
+# Кэш golangci-lint — в per-run temp вне worktree ($LOG_DIR), не в дереве сервиса
+# (SB-68) и не в общем кэше (SB-49). Внутри worktree ($SERVICE_ROOT/.cache) кэш
+# порождал untracked-файлы, грязнящие diff проверяемого дерева; общий кэш держал
+# абсолютные пути worktree и после accept-worktree падал ложным 'no such file' по
+# несуществующим путям. per-run temp снимает оба: в дереве ничего не оседает, пути
+# не переживают прогон. Цена — холодный кэш на каждый прогон.
+export GOLANGCI_LINT_CACHE="$LOG_DIR/golangci-lint"
+mkdir -p "$GOLANGCI_LINT_CACHE"
+
+failed=0
+
+status() {
+  printf '%s: %s\n' "$1" "$2" | tee -a "$SUMMARY_FILE"
+}
+
+summarize_failure() {
+  local log_file="$1"
+  local lines
+
+  lines="$(grep -E '(^--- FAIL:|FAIL|[Ee]rror|undefined|cannot|vet:|level=error)' "$log_file" | head -n 5 || true)"
+  if [[ -z "$lines" ]]; then
+    lines="$(tail -n 5 "$log_file" 2>/dev/null || true)"
+  fi
+
+  if [[ -n "$lines" ]]; then
+    printf '%s\n' "$lines" | sed 's/^/  /'
+  fi
+}
+
+run_check() {
+  local name="$1"
+  local log_name="$2"
+  shift 2
+
+  if "$@" > "$LOG_DIR/$log_name" 2>&1; then
+    status "$name" "пройдено"
+  else
+    failed=1
+    status "$name" "не пройдено"
+    summarize_failure "$LOG_DIR/$log_name"
+  fi
+}
+
+# База задачи для диффа. Сравнение только с рабочим деревом пропускает всё, что
+# уже закоммичено в ветку: на UPL-736 миграции лежали в коммите ветки, поэтому
+# проверка миграций молча печатала «пропущено» и не влияла на exit (SB-117).
+# Базу задаёт BASE_REF, иначе берётся первый существующий кандидат.
+BASE_REF="${BASE_REF:-}"
+
+detect_base_ref() {
+  local candidate
+
+  if [[ -n "$BASE_REF" ]]; then
+    printf '%s' "$BASE_REF"
+    return
+  fi
+
+  for candidate in origin/develop develop origin/main main; do
+    if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done
+}
+
+collect_changed_files() {
+  BASE_REF="$(detect_base_ref)"
+
+  {
+    [[ -n "$BASE_REF" ]] && git diff --name-only "$BASE_REF...HEAD"
+    git diff --name-only
+    git diff --cached --name-only
+    git ls-files --others --exclude-standard
+  } | sort -u > "$CHANGED_FILE" 2>"$LOG_DIR/changed-files.err"
+
+  git status --short > "$STATUS_FILE" 2>"$LOG_DIR/git-status.err"
+}
+
+needs_migration_check() {
+  grep -Eq '(^|/)migrations?/.*\.(up|down)\.sql$' "$CHANGED_FILE"
+}
+
+# Построчный разбор вместо `source`: значение с пробелами исполняется как
+# команда (`WEBSSO_SCOPES=openid sub phone profile` → «sub: command not found»),
+# и до переменной не доходит — проверка идёт с пустым значением. Значение с
+# glob-символом ещё и раскрывается по каталогу сервиса.
+load_env_files() {
+  local env_file line key value
+  for env_file in "$SERVICE_ROOT/configs/.env" "$SERVICE_ROOT/.env"; do
+    [[ -f "$env_file" ]] || continue
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+      [[ "$line" == *=* ]] || continue
+      key="${line%%=*}"
+      value="${line#*=}"
+      key="${key#"${key%%[![:space:]]*}"}"
+      key="${key#export }"
+      key="${key%"${key##*[![:space:]]}"}"
+      [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+      # Кавычки вокруг значения снимает и `source`, поведение сохраняем.
+      if [[ ${#value} -ge 2 && ( "$value" == \"*\" || "$value" == \'*\' ) ]]; then
+        value="${value:1:${#value}-2}"
+      fi
+      export "$key=$value"
+    done < "$env_file"
+  done
+}
+
+# Контейнер принадлежит стенду этого сервиса, если его compose-проект развёрнут
+# из каталога сервиса. Без такой проверки общий кандидат `db` подхватывает
+# контейнер чужого стенда, и временная БД проверки миграций создаётся в нём
+# (SB-118): в docker ps станции обычно висит `db` соседнего сервиса.
+container_belongs_to_service() {
+  local work_dir
+  work_dir="$(docker inspect "$1" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null)"
+  # Равенство — не только вложенность: compose лежит и в deployments/compose,
+  # и в корне сервиса (file-storage-service).
+  [[ -n "$work_dir" && ( "$work_dir" == "$SERVICE_MAIN_ROOT" || "$work_dir" == "$SERVICE_MAIN_ROOT"/* ) ]]
+}
+
+detect_db_container() {
+  local candidate
+
+  docker ps --format '{{.Names}}' > "$LOG_DIR/docker-ps.log" 2>&1 || return 1
+
+  if [[ -n "${DB_CONTAINER:-}" ]]; then
+    grep -qx "$DB_CONTAINER" "$LOG_DIR/docker-ps.log" && printf '%s' "$DB_CONTAINER"
+    return
+  fi
+
+  for candidate in "${SERVICE_NAME}-db" db; do
+    if grep -qx "$candidate" "$LOG_DIR/docker-ps.log" && container_belongs_to_service "$candidate"; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done
+}
+
+run_migration_check() {
+  local log_file="$LOG_DIR/migration-up-down.log"
+  local temp_db="${SERVICE_NAME//-/_}_final_checks_$(date +%Y%m%d%H%M%S)_$$"
+  local migrations_dir="${MIGRATIONS_DIR:-migrations}"
+  local db_user="${DB_USER:-postgres}"
+  local db_container
+  local env_candidate
+  local base_env
+  local temp_env
+  local migrations_count
+  local down_steps
+
+  : > "$log_file"
+
+  if [[ ! -d "$migrations_dir" ]]; then
+    failed=1
+    status "migration up/down" "блокер: каталог миграций не найден"
+    return
+  fi
+
+  # Изолированную up/down-проверку делаем штатным `go run ./cmd/migrate`, а не
+  # внешним golang-migrate CLI (SB-46): CLI в окружении может не быть, а cmd/migrate
+  # всегда собирается из исходников проекта. Нет cmd/migrate — не блокер, а пропуск.
+  if [[ ! -d cmd/migrate ]]; then
+    status "migration up/down" "пропущено: cmd/migrate отсутствует в сервисе"
+    return
+  fi
+
+  db_container="$(detect_db_container)"
+  if [[ -z "$db_container" ]]; then
+    failed=1
+    status "migration up/down" "блокер: контейнер БД стенда ${SERVICE_NAME} не найден (кандидаты: \${DB_CONTAINER}, ${SERVICE_NAME}-db, db; контейнер чужого стенда отвергнут — подними стенд сервиса или задай DB_CONTAINER)"
+    return
+  fi
+
+  migrations_count="$(find "$migrations_dir" -maxdepth 1 -type f -name '*.up.sql' | wc -l | tr -d ' ')"
+  if [[ "$migrations_count" == "0" ]]; then
+    failed=1
+    status "migration up/down" "блокер: *.up.sql миграции не найдены"
+    return
+  fi
+
+  # Откатываем не более трёх последних миграций: старые миграции не правим, а
+  # полный откат упирается в их исторические дефекты и красит проверку на любой
+  # задаче сервиса (SB-106).
+  down_steps="${MIGRATION_DOWN_STEPS:-3}"
+  if (( down_steps > migrations_count )); then
+    down_steps="$migrations_count"
+  fi
+
+  if ! docker exec "$db_container" psql -U "$db_user" -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE \"$temp_db\";" >> "$log_file" 2>&1; then
+    failed=1
+    status "migration up/down" "не пройдено"
+    summarize_failure "$log_file"
+    return
+  fi
+
+  # cmd/migrate берёт БД из конфига CONFIG_PATH (env-override DB_NAME игнорируется —
+  # CONFIG_PATH приоритетнее). Направляем на временную БД копией конфига с
+  # подменённым DB_NAME, а не через окружение.
+  # В worktree задачи configs/.env отсутствует (gitignored, из основного дерева не
+  # копируется), а без него cmd/migrate падает на подключении — проверка давала бы
+  # ложное «не пройдено». Берём конфиг основного рабочего дерева репозитория, а при
+  # его отсутствии — блокер, чтобы причина не читалась как дефект миграций.
+  base_env=""
+  for env_candidate in "$SERVICE_ROOT/configs/.env" "$SERVICE_ROOT/.env" "$SERVICE_MAIN_ROOT/configs/.env" "$SERVICE_MAIN_ROOT/.env"; do
+    if [[ -f "$env_candidate" ]]; then
+      base_env="$env_candidate"
+      break
+    fi
+  done
+
+  if [[ -z "$base_env" ]]; then
+    failed=1
+    status "migration up/down" "блокер: конфиг БД не найден (configs/.env или .env в $SERVICE_ROOT, $SERVICE_MAIN_ROOT)"
+    return
+  fi
+
+  temp_env="$LOG_DIR/migrate.env"
+  sed "s/^DB_NAME=.*/DB_NAME=$temp_db/" "$base_env" > "$temp_env"
+  grep -q '^DB_NAME=' "$temp_env" || printf 'DB_NAME=%s\n' "$temp_db" >> "$temp_env"
+
+  if CONFIG_PATH="$temp_env" go run ./cmd/migrate -direction up >> "$log_file" 2>&1 &&
+    CONFIG_PATH="$temp_env" go run ./cmd/migrate -direction down -steps "$down_steps" >> "$log_file" 2>&1; then
+    status "migration up/down" "пройдено (up: все, down: последние $down_steps)"
+  else
+    failed=1
+    status "migration up/down" "не пройдено"
+    summarize_failure "$log_file"
+  fi
+
+  rm -f "$temp_env"
+  docker exec "$db_container" psql -U "$db_user" -d postgres -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$temp_db\";" >> "$log_file" 2>&1 || true
+}
+
+check_testify_convention() {
+  local log_file="$LOG_DIR/testify-convention.log"
+  local violations=0
+
+  : > "$log_file"
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    # Файлы без тестовых функций — HTTP-моки, фабрики, сид данных — ассертов не
+    # содержат по определению, нарушением их считать нечего (SB-105).
+    grep -qE '^func (Test|Benchmark|Fuzz)' "$f" || continue
+    if ! grep -q 'stretchr/testify' "$f"; then
+      violations=$((violations + 1))
+      printf '%s\n' "$f" >> "$log_file"
+    fi
+  done < <(git ls-files '*_test.go')
+
+  if [[ "$violations" -eq 0 ]]; then
+    status "testify-convention" "пройдено"
+  else
+    failed=1
+    status "testify-convention" "не пройдено: файлы без testify (см. profiles/go.md)"
+    sed 's/^/  /' "$log_file"
+  fi
+}
+
+if [[ -z "${AGENT_SKILLS_DIR:-}" || ! -d "$AGENT_SKILLS_DIR" ]]; then
+  failed=1
+  status "skills" "блокер: AGENT_SKILLS_DIR не задан или не существует"
+else
+  find -L "$AGENT_SKILLS_DIR" -maxdepth 4 -name SKILL.md > "$LOG_DIR/skills.log" 2>&1
+  status "skills" "проверены"
+fi
+
+collect_changed_files
+load_env_files
+check_testify_convention
+
+if make -n pre-commit >/dev/null 2>&1; then
+  run_check "make pre-commit" "make-pre-commit.log" make pre-commit
+else
+  failed=1
+  status "make pre-commit" "блокер: цель pre-commit не найдена в Makefile"
+fi
+
+shadow_tool="$(go env GOPATH)/bin/shadow"
+if [[ -x "$shadow_tool" ]]; then
+  run_check "shadow-vet" "shadow-vet.log" go vet -vettool="$shadow_tool" -strict ./...
+else
+  failed=1
+  status "shadow-vet" "блокер: shadow не найден ($shadow_tool)"
+fi
+
+if needs_migration_check; then
+  run_migration_check
+else
+  status "migration up/down" "пропущено: в диффе задачи нет миграций (база: ${BASE_REF:-не определена})"
+fi
+
+if [[ -s "$STATUS_FILE" ]]; then
+  status "git status --short" "есть изменения"
+else
+  status "git status --short" "чисто"
+fi
+
+status "logs" "$LOG_DIR"
+
+exit "$failed"

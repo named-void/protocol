@@ -1,0 +1,6 @@
+# Локальный runtime и секреты периметра не входят в Git.
+.data/
+__pycache__/
+*.pyc
+
+.DS_Store

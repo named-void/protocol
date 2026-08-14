@@ -1,0 +1,4 @@
+interface:
+  display_name: "VCS host"
+  short_description: "Доступ к MR и выбор репозитория задачи"
+  default_prompt: "Используй $adapter-vcs, чтобы показать статус MR текущей задачи."

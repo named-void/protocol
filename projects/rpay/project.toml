@@ -1,0 +1,53 @@
+# Карта носителя rpay — единственный слой конфигурации его периметра.
+#
+# Здесь живёт вся конфигурация периметра: корни, значения адаптеров,
+# исполнители, конвейеры, пороги и profile_rules. Слоя над картой нет. Секции
+# [mcp.*] запрещены: секреты живут в `.data/config.toml` этого каталога.
+#
+# Локальный проект станции: внешних трекера, wiki и vcs-хоста у него нет.
+# Артефакты каждой интеграции лежат папками в её каталоге — раскладка и
+# порядок работы в ./rpay-integrations.md.
+
+[project]
+# Корень проекта в файловой системе — канал его опознания: работа в каталоге
+# ниже корня подключает эту карту. Каталоги интеграций лежат под ним.
+roots = ["."]
+
+[issue_tracker]
+# Внешнего трекера нет: источник issue — файл каталога tasks/ интеграции, его
+# путь передаёт поручение. Действует локальный режим без сетевых вызовов.
+product = "none"
+
+[docs_wiki]
+# Внешней wiki нет: пустой product выключает адаптер и spec-дискавери Triage.
+# Спецификации читаются файлами каталога wiki/ интеграции.
+product = ""
+
+# Секция [vcs_host] не объявлена: MR-хоста нет, git-состояние только локальное.
+
+# Профили, подключаемые к работе. Путь вида `profiles/<файл>.md` — от корня
+# репозитория правил (технологические профили); путь с `./` — от каталога
+# этой карты (проектная проза).
+[[profile_rules]]
+match = "path:/rpay/integrations/"
+profiles = ["./rpay-integrations.md"]
+
+[vcs]
+branch_types = ["feature", "bugfix", "hotfix"]
+commit_title_format = "<KEY> <прошедшее время>"
+
+[sessions]
+executors = ["codex", "claude", "kilo", "cursor"]
+default_executors = ["codex", "claude", "kilo"]
+
+[thresholds]
+quality_pass_max_files = 2
+quality_pass_max_lines = 40
+heartbeat_seconds = 120
+heartbeat_dead_multiplier = 5
+
+[thresholds.retry_limits]
+verify_failed = 2
+review_cycles = 3
+changes_requested = 3
+completeness_recheck = 2
