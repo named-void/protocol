@@ -599,10 +599,11 @@ EXPECTED_TYPES: dict[str, list[str]] = {
         "archive.dir",
         "thresholds.quality_pass_max_files",
         "thresholds.quality_pass_max_lines",
-        # Интервал heartbeat сессии: не реже него сессия дописывает текущее
-        # действие; общий порог ожидания с момента последней активности задаётся
-        # множителем heartbeat.
+        # Базовый интервал heartbeat сессии; остальные пороги строятся его
+        # коэффициентами.
         "thresholds.heartbeat_seconds",
+        # Коэффициент тишины до ping.
+        "thresholds.heartbeat_ping_multiplier",
         # Множитель heartbeat для порога stale/died.
         "thresholds.heartbeat_dead_multiplier",
         # Внутренние лимиты состояния Review (orchestration/adr/README.md#review-convergence).

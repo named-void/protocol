@@ -106,6 +106,7 @@ default_executors = ["codex", "kilo"]
 quality_pass_max_files = 2
 quality_pass_max_lines = 40
 heartbeat_seconds = 120
+heartbeat_ping_multiplier = 2
 heartbeat_dead_multiplier = 5
 
 [thresholds.retry_limits]

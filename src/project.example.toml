@@ -98,11 +98,15 @@ type = "local-worktree"
 # Пропуск Quality-Pass для тривиальных изменений: оба условия сразу.
 quality_pass_max_files = 2
 quality_pass_max_lines = 40
-# Интервал heartbeat сессии, секунд: не реже него сессия дописывает текущее
-# действие в запись реестра или свой журнал прогресса. Пороги ожидания и
-# stale/died считаются как heartbeat_seconds × heartbeat_dead_multiplier с
-# момента последней активности.
+# Базовый интервал heartbeat сессии, секунд: не реже него сессия дописывает
+# текущее действие в запись реестра или свой журнал прогресса. Все остальные
+# интервалы строятся коэффициентами от этого значения.
 heartbeat_seconds = 120
+# После heartbeat_seconds × heartbeat_ping_multiplier без обновления координатор
+# отправляет один ping. Ping не обновляет heartbeat и не продлевает stale-порог.
+heartbeat_ping_multiplier = 2
+# Порог stale/died: heartbeat_seconds × heartbeat_dead_multiplier с момента
+# последней активности.
 heartbeat_dead_multiplier = 5
 
 [thresholds.retry_limits]
