@@ -273,17 +273,9 @@ Implementation возвращает результат на доработку �
 
 Поручи проверку критериев приёмки новому сабагенту с пустым контекстом. Передай `WORKTREE_ROOT`, `<TASK_DIR>`, `IMPLEMENTATION_START`, `CANDIDATE` и снимки файлов вне Git. Сабагент проверяет критерии из `plan.md` для результата `IMPLEMENTATION_START..CANDIDATE`; детали реализации не проверяет.
 
-Для длительного Acceptance передай сабагенту отдельный файл progress и отдельный
-файл итогового результата. В progress он записывает текущий этап сразу после
-старта и не реже `thresholds.heartbeat_seconds`, в том числе во время долгого
-инструментального вызова. Если progress не обновлялся в течение
-`thresholds.heartbeat_seconds × thresholds.heartbeat_ping_multiplier`,
-координатор отправляет один ping с просьбой обновить этап. Если обновления нет
-до `thresholds.heartbeat_seconds × thresholds.heartbeat_dead_multiplier`,
-независимый контур считается недоступным: вердикт — `blocked` или
-`revision-required`, но не `accepted`. Ping не обновляет heartbeat и не
-продлевает stale-порог. Итоговый файл создаётся или дописывается только после
-завершения проверки; его mtime не заменяет heartbeat.
+Для длительного Acceptance передай сабагенту отдельные пути progress и
+итогового результата и примени контракт heartbeat из `checker`. Отсутствие
+подтверждённого независимого результата не позволяет вернуть `accepted`.
 
 Если сабагент не подтвердил хотя бы один обязательный критерий, зафиксируй причину и выполни `return-to-implementation`.
 
