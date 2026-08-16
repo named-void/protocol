@@ -110,6 +110,8 @@
 - Инфраструктура только из `getblogger/upl/infrastructure` — без локальных аналогов для config, logger, postgres, kafka, tracing и т.п. (`dev_policy.md`).
 - PostgreSQL: pgx v5 + squirrel, миграции golang-migrate; HTTP — Gin; OpenAPI — swag.
 - Транзакционная граница — usecase; repository не оркестрирует сценарии (`transactions_policy.md`).
+- В `internal/repository/postgres` relation-фабрику храни рядом с целевым доменом: её SQL/JSON и вложенные relation — в `<domain>_include_query.go` (например, `legalRelation` — в `legal_include_query.go`). Несколько тесно связанных relation одного доменного контекста держи в одном таком файле.
+- Реестр доступных include оставляй рядом с корневым query. Общие compiler/scan helpers (`include_query.go`, `include_scan.go`) не дублируй; одну relation-фабрику переиспользуй из нескольких реестров.
 - Проверки существования партнёра размещай в репозитории того же партнёрского контура, а не в unrelated repository.
 - При чтении партнёров сохраняй фильтр по неудалённым; в запросе с алиасом фильтруй по алиасу.
 
