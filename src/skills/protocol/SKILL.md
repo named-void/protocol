@@ -9,17 +9,21 @@ description: 'Триггеры: явная команда пользовател
 
 Перед первым действием протокола:
 
-1. Разреши физический корень protocol через установленный skill-link:
+1. Разреши физический корень protocol и каталог справочников через установленный skill-link:
 
    ```bash
-   PROTOCOL_SRC="$(cd "$(realpath "$AGENT_SKILLS_DIR/protocol")/../.." && pwd -P)"
+   PROTOCOL_SKILL="$(realpath "$AGENT_SKILLS_DIR/protocol")"
+   PROTOCOL_SRC="$(cd "$PROTOCOL_SKILL/../.." && pwd -P)"
+   PROTOCOL_INSTRUCTIONS="$PROTOCOL_SRC/instructions"
    ```
 
 2. До первой shell-команды, проверки, пробы, ожидания или файловой правки
-   прочитай `$PROTOCOL_SRC/instructions/environment.md` и справочник
-   `agent-<имя-исполнителя>.md` текущего CLI. Имя оболочки не является именем
-   CLI; отсутствующий справочник не блокирует маршрут. До этого чтения разрешены
-   только symlink-aware обход каталога skills и вычисление `PROTOCOL_SRC`.
+   прочитай `$PROTOCOL_INSTRUCTIONS/environment.md` и справочник
+   `$PROTOCOL_INSTRUCTIONS/agent-<имя-исполнителя>.md` текущего CLI. Имя оболочки
+   не является именем CLI; отсутствующий справочник не блокирует маршрут. До
+   этого чтения разрешены только symlink-aware обход каталога skills и
+   вычисление путей `PROTOCOL_SKILL`, `PROTOCOL_SRC` и
+   `PROTOCOL_INSTRUCTIONS`.
 3. Получи корень карт штатной командой:
 
    ```bash
@@ -80,7 +84,7 @@ Git-репозитории. Не инициализируй репозитори
 1. Запусти:
 
    ```bash
-   "$AGENT_SKILLS_DIR/protocol/scripts/resolve_issue.py" '<ISSUE_URL>'
+   "$PROTOCOL_SKILL/scripts/resolve_issue.py" '<ISSUE_URL>'
    ```
 
    Resolver принимает абсолютный HTTP(S) URL с точным путём `/browse/<KEY>`,
@@ -116,7 +120,7 @@ Git-репозитории. Не инициализируй репозитори
 4. Если явный идентификатор и идентификатор ветки различаются, остановись и сообщи о конфликте. Issue key
    нормализуй в верхний регистр; `common-N` сохраняй как есть.
 5. Перед созданием новой редакции проверь состояние `7` исходной задачи или предыдущей редакции и отсутствие выбранного полного идентификатора в runtime и Git; существующую незавершённую редакцию продолжай по её журналу. Если это не редакция и ключа нет ни в поручении, ни в ветке, выдели глобальный идентификатор командой `python3 "$PROTOCOL_SRC/lib/skills_config.py" allocate-common-task`. Команда атомарно возвращает `common-<index>`; не подбирай индекс вручную и не переиспользуй пропуски.
-6. Выполни Branch-Sync по `references/git-lifecycle.md` навыка и все дальнейшие действия веди в
+6. Выполни Branch-Sync по `$PROTOCOL_SKILL/references/git-lifecycle.md` навыка и все дальнейшие действия веди в
    полученном worktree. Зафиксируй в `task.md` исходную ветвь, выбранный идентификатор и его
    источник (`input`, `branch`, `revision` или `common-index`), каноническую ветвь, ветвь исполнителя, базу и
    `WORKTREE_ROOT` — абсолютный путь целевого worktree.
@@ -162,7 +166,7 @@ Git-репозитории. Не инициализируй репозитори
 
 Считай `<TASK_DIR>/task_stage.md` единственным источником текущего этапа. Файл должен содержать ровно `<N>\n`, где `N` — число от 0 до 7. Значения `0..6` обозначают этапы, `7` — завершённую задачу. Не определяй текущий этап по журналу, плану, пользовательской формулировке или памяти диалога.
 
-Используй только `python3 "$AGENT_SKILLS_DIR/protocol/scripts/task_stage.py"`:
+Используй только `python3 "$PROTOCOL_SKILL/scripts/task_stage.py"`:
 
 - `init "$TASK_DIR"` — единожды создать этап 0;
 - `current "$TASK_DIR"` — определить этап при продолжении задачи;
