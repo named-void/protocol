@@ -14,10 +14,10 @@ SKILL_PAIRS := protocol $(SKILLS_DIR)/protocol \
 	adapter-issues $(SKILLS_DIR)/adapter/issues \
 	adapter-wiki $(SKILLS_DIR)/adapter/wiki \
 	adapter-vcs $(SKILLS_DIR)/adapter/vcs
-TEST_MODULES := $(filter-out tests.test_vcs_scripts,$(patsubst tests/%.py,tests.%,$(wildcard tests/test_*.py)))
+TEST_MODULES := $(patsubst tests/%.py,tests.%,$(wildcard tests/test_*.py))
 TEST_JOBS ?= 6
 
-.PHONY: install uninstall test test-vcs lint
+.PHONY: install uninstall test lint
 
 install:
 	@"$(INSTRUCTION_LINK)" install "$(CODEX_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
@@ -41,9 +41,6 @@ uninstall:
 
 test:
 	@printf '%s\n' $(TEST_MODULES) | xargs -P $(TEST_JOBS) -I{} python3 -m unittest {}
-
-test-vcs:
-	python3 -m unittest tests.test_vcs_scripts
 
 lint:
 	@find "$(CURDIR)/scripts" "$(CURDIR)/skills" -name '*.sh' -exec bash -n {} +

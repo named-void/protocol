@@ -8,7 +8,7 @@
 #   final-checks.sh prepare
 #   CANDIDATE_REF=<full-sha> final-checks.sh verify
 #
-# prepare запускает mutating project checks в рабочем Implementation worktree.
+# prepare запускает mutating project checks в task-worktree.
 # verify проверяет точный candidate в disposable worktree и не меняет target.
 set -u
 
@@ -108,12 +108,7 @@ mkdir -p "$LOG_DIR"
 cd "$SERVICE_ROOT" || exit 99
 export PATH="$(go env GOPATH)/bin:$PATH"
 
-# Кэш golangci-lint — в per-run temp вне worktree ($LOG_DIR), не в дереве сервиса
-# (SB-68) и не в общем кэше (SB-49). Внутри worktree ($SERVICE_ROOT/.cache) кэш
-# порождал untracked-файлы, грязнящие diff проверяемого дерева; общий кэш держал
-# абсолютные пути worktree и после accept-worktree падал ложным 'no such file' по
-# несуществующим путям. per-run temp снимает оба: в дереве ничего не оседает, пути
-# не переживают прогон. Цена — холодный кэш на каждый прогон.
+# Кэш golangci-lint хранится в per-run temp вне worktree: кэш внутри worktree создавал untracked-файлы (SB-68), а общий кэш сохранял пути удалённых worktree и падал с `no such file` (SB-49). Цена — холодный кэш на каждый прогон.
 export GOLANGCI_LINT_CACHE="$LOG_DIR/golangci-lint"
 mkdir -p "$GOLANGCI_LINT_CACHE"
 

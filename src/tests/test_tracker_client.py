@@ -257,37 +257,18 @@ class TrackerClientTest(unittest.TestCase):
         )
 
     def test_disabled_adapter_makes_no_network_call(self) -> None:
-        # Режим `issue_tracker.product = "none"` требует не делать сетевых
-        # вызовов; клиента зовут и вне маршрута, поэтому гейт живёт в нём
-        # (SB-210). Отсутствие ключа выключает адаптер так же — как в гейте
-        # конфигурации `scripts/check-mcp.py`.
-        # Подкоманды перечислены все: `remote-links` идёт не через MCP, а прямым
-        # REST GET, и признак его вызова — `get_paths`, а не `methods`.
-        commands = (
-            ("issue", "UPL-490"),
-            ("search", "project = UPL"),
-            ("mylist",),
-            ("fields", "sprint"),
-            ("tools",),
-            ("call", "jira_search", "--arguments", "{}"),
-            ("remote-links", "UPL-677"),
-        )
+        # Один MCP и один REST shortcut подтверждают общий сетевой гейт; варианты product проверяются отдельно как pure-функция.
         base = self.agents_config.read_text()
-        for product in ('product = "none"\n', 'product = "NONE"\n', 'product = " none "\n', 'product = ""\n', ""):
-            self.write_config(
-                base.replace('product = "jira"\n', product, 1)
-            )
-            for command in commands:
-                with self.subTest(product=product, command=command[0]):
-                    MCPHandler.methods = []
-                    MCPHandler.get_paths = []
-
-                    result = self._run(*command)
-
-                    self.assertEqual(result.returncode, 2, result.stdout)
-                    self.assertIn("issue_tracker.product", result.stderr)
-                    self.assertEqual(MCPHandler.methods, [])
-                    self.assertEqual(MCPHandler.get_paths, [])
+        self.write_config(base.replace('product = "jira"\n', 'product = "none"\n', 1))
+        for command in (("issue", "UPL-490"), ("remote-links", "UPL-677")):
+            with self.subTest(command=command[0]):
+                MCPHandler.methods = []
+                MCPHandler.get_paths = []
+                result = self._run(*command)
+                self.assertEqual(result.returncode, 2, result.stdout)
+                self.assertIn("issue_tracker.product", result.stderr)
+                self.assertEqual(MCPHandler.methods, [])
+                self.assertEqual(MCPHandler.get_paths, [])
 
     def test_disabled_config_can_be_called_on_demand_and_session_is_closed(self) -> None:
         config = load_server_config("jira")

@@ -18,23 +18,7 @@ product = ""
 branch_types = ["feature", "bugfix", "hotfix"]
 commit_title_format = "<KEY> <прошедшее время>"
 
-[sessions]
-executors = ["codex", "claude", "kilo", "cursor"]
-default_executors = ["codex", "kilo"]
-
-[[reproduction.environments]]
-name = "local-worktree"
-type = "local-worktree"
-
 [thresholds]
-quality_pass_max_files = 2
-quality_pass_max_lines = 40
 heartbeat_seconds = 120
 heartbeat_ping_multiplier = 2
 heartbeat_dead_multiplier = 5
-
-[thresholds.retry_limits]
-verify_failed = 2
-review_cycles = 3
-changes_requested = 3
-completeness_recheck = 2

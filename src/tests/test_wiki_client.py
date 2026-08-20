@@ -301,38 +301,24 @@ class WikiClientTest(unittest.TestCase):
         self.assertEqual(MCPHandler.tool_calls, [])
 
     def test_disabled_adapter_makes_no_network_call(self) -> None:
-        # Режим `docs_wiki.product = "none"` требует не делать сетевых вызовов;
-        # клиента зовут и вне маршрута, поэтому гейт живёт в нём (SB-210).
-        commands = (
-            ("page", "123456"),
-            ("search", "Epic Name"),
-            ("comments", "123456"),
-            ("tools",),
-            ("call", "confluence_search", "--arguments", "{}"),
-        )
-        for product in ('product = "none"', 'product = "NONE"', 'product = " none "', 'product = ""', ""):
-            self.write_config(
-                "\n".join(
-                    [
-                        "[docs_wiki]",
-                        product,
-                        'spaces = "UPL"',
-                        "",
-                        "[mcp.confluence]",
-                        f'url = "http://127.0.0.1:{self.server.server_port}/mcp"',
-                        "",
-                    ]
-                )
+        # Один shortcut подтверждает общий сетевой гейт; варианты product проверяются отдельно как pure-функция.
+        self.write_config(
+            "\n".join(
+                [
+                    "[docs_wiki]",
+                    'product = "none"',
+                    'spaces = "UPL"',
+                    "",
+                    "[mcp.confluence]",
+                    f'url = "http://127.0.0.1:{self.server.server_port}/mcp"',
+                    "",
+                ]
             )
-            for command in commands:
-                with self.subTest(product=product, command=command[0]):
-                    MCPHandler.methods = []
-
-                    result = self._run(*command)
-
-                    self.assertEqual(result.returncode, 2, result.stdout)
-                    self.assertIn("docs_wiki.product", result.stderr)
-                    self.assertEqual(MCPHandler.methods, [])
+        )
+        result = self._run("page", "123456")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("docs_wiki.product", result.stderr)
+        self.assertEqual(MCPHandler.methods, [])
 
     def test_search_uses_configured_spaces_filter(self) -> None:
         result = self._run("search", "Epic Name")

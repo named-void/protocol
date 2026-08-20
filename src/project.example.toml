@@ -1,18 +1,8 @@
-# Образец карты носителя (orchestration/adr/README.md#carrier-config).
-# Копия — в carrier: <projects-root>/<имя>/project.toml для проекта
-# либо <projects-root>/_common/project.toml для общего fallback-периметра
-# (<projects-root> = <protocol-carrier>/projects, переопределяется
-# $AGENTS_PROJECTS_DIR; имя проекта — имя каталога).
+# Образец карты носителя. Копия находится в `<projects-root>/<имя>/project.toml` для проекта или в `<projects-root>/_common/project.toml` для общего fallback-периметра.
 #
-# Карта — единственный слой конфигурации периметра: слоя над ним нет,
-# отсутствующий ключ берёт дефолт у своего потребителя. Секреты в карту не
-# кладутся: [mcp.*] с url и http_headers живут в `.data/config.toml`, чтобы
-# карта не становилась каналом случайной утечки personal-token.
+# Карта — единственный слой конфигурации периметра. Отсутствующий ключ берёт дефолт у своего потребителя. Секреты `[mcp.*]` с `url` и `http_headers` живут в `.data/config.toml`.
 #
-# Обязательные ключи (`skills_config.py validate` печатает fail: за каждый
-# отсутствующий, маршрут по такой карте не начинается): sessions.executors,
-# sessions.default_executors, vcs.commit_title_format. Остальные опциональны — у них
-# есть работоспособный дефолт либо отсутствие означает режим.
+# Обязательный ключ — `vcs.commit_title_format`; `skills_config.py validate` сообщает о его отсутствии.
 
 [project]
 # Корни проекта в файловой системе — канал его опознания: работа в каталоге
@@ -36,7 +26,7 @@ my_issues_query = "filter = <id>"
 #sprint = "customfield_<id>"
 
 [docs_wiki]
-# Spec-дискавери в Triage (orchestration/adr/README.md#spec-sources).
+# Spec-discovery в Define.
 # `product = "none"`, пустое значение и отсутствующая секция — механизм
 # выключен, триаж работает только по тексту issue.
 product = "confluence"
@@ -64,68 +54,17 @@ hosts = ["<vcs-host>"]
 branch_types = ["feature", "bugfix", "hotfix"]
 commit_title_format = "<KEY> <прошедшее время>"
 
-[sessions]
-executors = ["codex", "claude", "cursor"]
-# Элементы default_executors — спецификации
-# AGENT[:MODEL[:EFFORT]] (orchestration/adr/README.md#executor-spec): модель и
-# effort опциональны, AGENT обязан входить в executors.
-default_executors = ["codex", "claude"]
-# Дефолты — <data-root>/sessions и <data-root>/cards; переопределяются
-# $AGENTS_SESSIONS_DIR и $AGENTS_CARDS_DIR соответственно.
-#registry_dir = "<data-root>/sessions"
-# Корень карточек; движок неймспейсит по роли: <cards_dir>/<role>/
-# (orchestration/adr/README.md#role-axis, роль — env AGENTS_ROLE, дефолт
-# developer).
-#cards_dir = "<data-root>/cards"
-
 [dispatch]
 # Префикс ключа задачи -> путь группы проектов в хосте.
 key_prefix_map = { KEY = "<группа>/<подгруппа>" }
 
-[[reproduction.environments]]
-# Локальное дерево — стенд, не требующий внешних адресов.
-name = "local-worktree"
-type = "local-worktree"
-
-# Стенды воспроизведения дефектов проекта.
-#[[reproduction.environments]]
-#name = "test-stand"
-#type = "test-stand"
-#url = "https://<stand-host>"
-#health = "GET /health/live"
-
 [thresholds]
-# Пропуск Quality-Pass для тривиальных изменений: оба условия сразу.
-quality_pass_max_files = 2
-quality_pass_max_lines = 40
-# Базовый интервал heartbeat сессии, секунд: не реже него сессия дописывает
-# текущее действие в запись реестра или свой журнал прогресса. Все остальные
-# интервалы строятся коэффициентами от этого значения.
+# Базовый интервал heartbeat независимой проверки, секунд.
 heartbeat_seconds = 120
-# После heartbeat_seconds × heartbeat_ping_multiplier без обновления координатор
-# отправляет один ping. Ping не обновляет heartbeat и не продлевает stale-порог.
+# После `heartbeat_seconds × heartbeat_ping_multiplier` координатор отправляет один ping.
 heartbeat_ping_multiplier = 2
-# Порог stale/died: heartbeat_seconds × heartbeat_dead_multiplier с момента
-# последней активности.
+# После `heartbeat_seconds × heartbeat_dead_multiplier` проверка считается заблокированной.
 heartbeat_dead_multiplier = 5
-
-[thresholds.retry_limits]
-# Переопределения retry_limit per-петля (дефолт 5 — из issue-state-graph.yaml).
-verify_failed = 2
-# Внутренние счётчики состояния Review
-# (orchestration/adr/README.md#review-convergence, не петли графа): повторные
-# cross-review после подтверждённых cross-findings и сбои self-проверки
-# полноты по чек-листу. Findings self-review и обоих counter-review
-# review_cycles не увеличивают.
-review_cycles = 3
-completeness_recheck = 2
-
-[archive]
-# Каталог архива прошлых прогонов issue (пишется archive_run.py оркестратора;
-# дефолт <data-root>/archive, переопределяется $AGENTS_ARCHIVE_DIR). Прогон
-# архивируется в <dir>/<KEY>-run<N>/ с манифестом ROLLBACK.md —
-# orchestration/adr/README.md#run-archival.
-#dir = "<data-root>/archive"
 
 # Профили, подключаемые к работе. Путь вида `profiles/<файл>.md` — от корня
 # репозитория правил (технологические профили); путь с `./` — от каталога

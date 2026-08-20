@@ -24,10 +24,6 @@ OUTSIDE = """\
 product = "jira"
 my_issues_query = "assignee = currentUser()"
 
-[sessions]
-executors = ["codex", "claude"]
-default_executors = ["codex"]
-
 [vcs]
 commit_title_format = "<KEY> сделано"
 """
@@ -214,20 +210,22 @@ class ProjectLayerTest(unittest.TestCase):
         outside = self.run_cli("get", "dispatch.key_prefix_map", "--json", carrier=self.outside)
         self.assertEqual(1, outside.returncode)
 
-    def test_project_declares_sessions_and_thresholds(self) -> None:
+    def test_project_declares_heartbeat_threshold(self) -> None:
         self.write_project(
             "acme",
             f'[project]\nroots = ["{self.work}"]\n\n'
-            '[sessions]\nexecutors = ["codex"]\ndefault_executors = ["codex"]\n\n'
             '[thresholds]\nheartbeat_seconds = 30\n',
-        )
-        self.assertEqual(
-            '["codex"]',
-            self.run_cli("get", "sessions.executors", "--json", cwd=self.work).stdout.strip(),
         )
         self.assertEqual(
             "30", self.run_cli("get", "thresholds.heartbeat_seconds", cwd=self.work).stdout.strip()
         )
+
+    def test_adapter_off_values_are_normalized(self) -> None:
+        for value in ("", "none", "NONE", " none "):
+            with self.subTest(value=value):
+                self.assertTrue(skills_config.adapter_is_off(value))
+        self.assertFalse(skills_config.adapter_is_off("jira"))
+
     def test_roots_prints_the_project_roots(self) -> None:
         # Первый корень читают маршрут vcs-host и запуск периметра: разбор карты
         # у каждого потребителя был бы второй копией правила.
@@ -338,7 +336,7 @@ class ProjectLayerTest(unittest.TestCase):
         # рантайм уже не читает.
         self.acme()
         secrets = self.root / "secrets.toml"
-        secrets.write_text('[sessions]\nexecutors = ["codex"]\n', encoding="utf-8")
+        secrets.write_text('[station]\nlegacy = true\n', encoding="utf-8")
         result = self.run_cli("validate", carrier=self.outside, AGENTS_SECRETS=str(secrets))
         self.assertEqual(1, result.returncode)
         self.assertIn("only [mcp.<server>] sections belong here", result.stdout)

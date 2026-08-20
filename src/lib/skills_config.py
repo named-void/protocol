@@ -24,9 +24,7 @@ CLI::
 Configuration is a single layer — the carrier map:
 ``<projects-root>/<name>/project.toml`` for an identified project and
 ``<projects-root>/_common/project.toml`` outside one.
-It holds roots, adapter values, executors and thresholds; secrets
-(``[mcp.*]`` with ``url`` and ``http_headers``) live in the secrets file
-outside git and nowhere else.
+It holds roots, adapter values and heartbeat thresholds; secrets (``[mcp.*]`` with ``url`` and ``http_headers``) live in the secrets file outside git and nowhere else.
 
 ``get`` prints the resolved value and exits 1 when the key is missing and
 no default was supplied. ``validate`` type-checks the known keys of every
@@ -37,11 +35,6 @@ scripts read, so the orchestrator seeds them from config with one
 ``eval "$(... export-env)"`` instead of assembling each by hand — otherwise a
 missing export silently falls back to the scripts' built-in defaults and
 config diverges from behaviour.
-
-Executor selection is the one intentional exception to carrier ownership:
-``main-subagent <cli> <single|multiple>`` reads ``[main_subagent]`` only from
-the rules tree ``project.toml``. It is coordinator runtime policy, not project
-configuration, and is never merged into a carrier map.
 """
 
 from __future__ import annotations
@@ -195,14 +188,6 @@ def _load(path: Path) -> dict[str, Any]:
 
 class ConfigError(RuntimeError):
     """Конфигурация невалидна: работа по ней не начинается."""
-
-
-def _participant_label(spec: str) -> str:
-    try:
-        from .participant_label import label
-    except ImportError:  # direct script execution
-        from participant_label import label
-    return label(spec)
 
 
 def project_names() -> list[str]:
@@ -424,112 +409,6 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     return config
 
 
-def load_main_subagent(
-    agent: str,
-    *,
-    path: str | os.PathLike[str] | None = None,
-    validate_all: bool = False,
-) -> dict[str, Any]:
-    """Native profile and ordered fleet owned by the orchestrator rules tree.
-
-    ``path`` exists for validation and tests; runtime callers intentionally do
-    not inherit ``AGENTS_CONFIG`` or the identified project's carrier map.
-    """
-    config_path = Path(path) if path is not None else rules_tree_root() / "project.toml"
-    try:
-        config = _load(config_path)
-    except (OSError, tomllib.TOMLDecodeError) as error:
-        raise ConfigError(f"{config_path}: {error}") from error
-    profiles = config.get("main_subagent")
-    if not isinstance(profiles, dict):
-        raise ConfigError(f"{config_path}: main_subagent must be a table")
-    fleet = profiles.get("fleet_executors")
-    if (
-        not isinstance(fleet, list)
-        or not fleet
-        or any(not isinstance(spec, str) or not spec for spec in fleet)
-    ):
-        raise ConfigError(
-            f"{config_path}: main_subagent.fleet_executors must be a non-empty list"
-        )
-    try:
-        labels = [_participant_label(spec) for spec in fleet]
-    except ValueError as error:
-        raise ConfigError(
-            f"{config_path}: main_subagent.fleet_executors is invalid: {error}"
-        ) from error
-    if any(label == "native" or label.startswith("native-") for label in labels):
-        raise ConfigError(
-            f"{config_path}: main_subagent.fleet_executors uses reserved native label"
-        )
-    if len(labels) != len(set(labels)):
-        raise ConfigError(
-            f"{config_path}: main_subagent.fleet_executors has duplicate participant labels"
-        )
-    profile_items = ((key, value) for key, value in profiles.items() if key != "fleet_executors")
-    selected = profile_items if validate_all else ((agent, profiles.get(agent)),)
-    for cli, profile in selected:
-        if profile is None:
-            continue
-        if not isinstance(profile, dict):
-            raise ConfigError(f"{config_path}: main_subagent.{cli} must be a table")
-        unknown = sorted(set(profile) - {"agent_type"})
-        if unknown:
-            raise ConfigError(
-                f"{config_path}: main_subagent.{cli} has unsupported keys: {', '.join(unknown)}"
-            )
-        agent_type = profile.get("agent_type")
-        if (
-            not isinstance(agent_type, str)
-            or not agent_type.strip()
-            or agent_type != agent_type.strip()
-            or ":" in agent_type
-            or any(char.isspace() for char in agent_type)
-        ):
-            raise ConfigError(
-                f"{config_path}: main_subagent.{cli}.agent_type must be a non-empty token"
-            )
-    result: dict[str, Any] = {"fleet_executors": fleet}
-    profile = profiles.get(agent)
-    if profile is not None:
-        result["agent_type"] = profile["agent_type"]
-    return result
-
-
-def resolve_main_subagent(
-    agent: str,
-    cardinality: str,
-    *,
-    path: str | os.PathLike[str] | None = None,
-) -> dict[str, object]:
-    """Materialize the selected native and fleet participants."""
-    if cardinality not in ("single", "multiple"):
-        raise ConfigError(f"unsupported executor cardinality: {cardinality}")
-    config = load_main_subagent(agent, path=path)
-    participants = [
-        {"label": _participant_label(spec), "spec": spec}
-        for spec in config["fleet_executors"]
-    ]
-    native = None
-    if "agent_type" in config:
-        native = {
-            "agent_type": config["agent_type"],
-            "spec": f"{agent}:{config['agent_type']}",
-        }
-    if cardinality == "single":
-        fleet = [] if native else participants[:1]
-    else:
-        fleet = participants[1:] if native else participants
-    if native is None and not fleet:
-        raise ConfigError(f"{cardinality} executor composition is empty")
-    return {
-        "cardinality": cardinality,
-        "coordinator_cli": agent,
-        "native": native,
-        "fleet": fleet,
-    }
-
-
 def _get(config: dict[str, Any], dotted: str) -> Any:
     node: Any = config
     for part in dotted.split("."):
@@ -594,11 +473,6 @@ EXPECTED_TYPES: dict[str, list[str]] = {
         "docs_wiki.rest.url_header",
         "docs_wiki.rest.token_header",
         "vcs.commit_title_format",
-        "sessions.registry_dir",
-        "sessions.cards_dir",
-        "archive.dir",
-        "thresholds.quality_pass_max_files",
-        "thresholds.quality_pass_max_lines",
         # Базовый интервал heartbeat сессии; остальные пороги строятся его
         # коэффициентами.
         "thresholds.heartbeat_seconds",
@@ -606,26 +480,19 @@ EXPECTED_TYPES: dict[str, list[str]] = {
         "thresholds.heartbeat_ping_multiplier",
         # Множитель heartbeat для порога stale/died.
         "thresholds.heartbeat_dead_multiplier",
-        # Внутренние лимиты состояния Review (orchestration/adr/README.md#review-convergence).
-        "thresholds.retry_limits.review_cycles",
-        "thresholds.retry_limits.completeness_recheck",
     ],
     "list": [
         "vcs.branch_types",
         "vcs_host.hosts",
-        "sessions.executors",
-        "sessions.default_executors",
     ],
     "table": [
         "dispatch.key_prefix_map",
-        "thresholds.retry_limits",
         # Доступ к MCP-серверам (orchestration/adr/README.md#mcp-credentials):
         # секция на сервер, имя — продукт адаптера, поэтому типизируется
         # корень, а не отдельные секции.
         "mcp",
     ],
     "tables": [
-        "reproduction.environments",
         "profile_rules",
         "docs_wiki.spec_roots",
     ],
@@ -644,24 +511,9 @@ def _is_type(value: Any, type_name: str) -> bool:
     return False
 
 
-# Ключи без работоспособного фолбэка (либо фолбэк скрипта зависит от машины —
-# набор установленных CLI): без них маршрут встаёт посреди работы, поэтому их
-# отсутствие валит гейт перед его началом. Не обязательны: ключи с универсальным
-# дефолтом (issue_tracker.key_pattern, vcs.branch_types), пороги-константы и
-# ключи, чьё отсутствие означает режим (docs_wiki.product = "none" либо пустой
-# docs_wiki — дискавери выключен).
+# Ключи без работоспособного фолбэка: без них маршрут встаёт перед commit.
 REQUIRED_KEYS: tuple[str, ...] = (
-    "sessions.executors",
-    "sessions.default_executors",
     "vcs.commit_title_format",
-)
-
-REMOVED_EXECUTOR_KEYS: tuple[str, ...] = (
-    "planning.adr_executor",
-    "review.convergence_executor",
-    "review.counter_review_executor",
-    "review.parallel_executors",
-    "verification.parallel_executors",
 )
 
 
@@ -716,23 +568,8 @@ def cmd_validate(_args: list[str]) -> int:
         except Exception as exc:  # noqa: BLE001 - surface any parse failure
             failures.append(f"fail: {label}: {exc}")
             continue
-        if "main_subagent" in carrier and path.resolve() != (rules_tree_root() / "project.toml").resolve():
-            failures.append(
-                f"fail: {path}: main_subagent belongs to the rules config, not a project carrier"
-            )
-        for removed in REMOVED_EXECUTOR_KEYS:
-            try:
-                _get(carrier, removed)
-            except KeyError:
-                continue
-            failures.append(f"fail: {removed}: removed key; use main_subagent.fleet_executors")
         if path == own_path:
             config = carrier
-    try:
-        load_main_subagent("__validate_all__", validate_all=True)
-        checked += 1
-    except ConfigError as exc:
-        failures.append(f"fail: {exc}")
     if secrets_file.get("mcp"):
         config = {**config, "mcp": secrets_file["mcp"]}
     for key in REQUIRED_KEYS:
@@ -822,30 +659,10 @@ def cmd_get(args: list[str]) -> int:
     return 0
 
 
-def cmd_main_subagent(args: list[str]) -> int:
-    if len(args) != 2 or not args[0] or args[0].startswith("-"):
-        print("usage: skills_config.py main-subagent <cli> <single|multiple>", file=sys.stderr)
-        return 2
-    try:
-        selection = resolve_main_subagent(args[0], args[1])
-    except Exception as exc:  # noqa: BLE001 - configuration errors are user-facing
-        print(f"error: cannot resolve main subagent composition: {exc}", file=sys.stderr)
-        return 3
-    print(json.dumps(selection, ensure_ascii=False))
-    return 0
-
-
-# AGENTS_* переменные, которые скрипты git-workflow читают как переопределение
-# поверх встроенных дефолтов (sync-branch.sh, lib-git.sh). Собираются из
-# конфига одним вызовом, чтобы пропуск экспорта не давал тихого расхождения
-# конфига со скриптами. Каждая запись: env-имя ← dotted-ключ; `is_list`
-# склеивает элементы списка через пробел (формат $AGENTS_BRANCH_TYPES/
-# $AGENTS_EXECUTORS). База задачи (AGENTS_BASE_BRANCH) сюда не входит: она не
-# задаётся конфигом, а живёт в Status карточки (orchestration/adr/README.md#task-base).
+# AGENTS_* переменные, которые git-workflow читает поверх встроенных дефолтов. `is_list` склеивает элементы списка через пробел; `AGENTS_BASE_BRANCH` задаёт вызывающий.
 EXPORT_ENV: list[tuple[str, str, bool]] = [
     ("AGENTS_KEY_PATTERN", "issue_tracker.key_pattern", False),
     ("AGENTS_BRANCH_TYPES", "vcs.branch_types", True),
-    ("AGENTS_EXECUTORS", "sessions.executors", True),
 ]
 
 
@@ -1069,8 +886,6 @@ def main(argv: list[str]) -> int:
         return cmd_get(args[1:])
     if args and args[0] == "validate":
         return cmd_validate(args[1:])
-    if args and args[0] == "main-subagent":
-        return cmd_main_subagent(args[1:])
     if args and args[0] == "export-env":
         return cmd_export_env(args[1:])
     if args and args[0] == "project":
@@ -1087,7 +902,7 @@ def main(argv: list[str]) -> int:
         return cmd_roots(args[1:])
     print(
         "usage: skills_config.py get <dotted.key> [--default X] [--json]"
-        " | main-subagent <cli> <single|multiple> | validate | export-env"
+        " | validate | export-env"
         " | project [--path <dir>] | profiles [--path <dir>]"
         " | projects-root | data-root | allocate-common-task"
         " | roots [--project <name>]",

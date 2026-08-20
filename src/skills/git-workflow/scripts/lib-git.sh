@@ -1,9 +1,5 @@
 # shellcheck shell=bash
-# Общие helper-функции локального Git workflow подключаются через
-# `source "<dir>/lib-git.sh"` из sync-branch.sh и accept-worktree.sh. Тела здесь — единственный источник истины;
-# поведение и коды выхода не меняются относительно прежних локальных копий.
-# Скрипт-специфичные функции (usage, worktree_is_dirty)
-# остаются в самих скриптах.
+# Общие helper-функции локального Git workflow для sync-branch.sh.
 
 _git_helpers_file="$(realpath "${BASH_SOURCE[0]}")"
 _git_helpers_dir="${_git_helpers_file%/*}"
@@ -23,9 +19,6 @@ normalize_task_key() {
   if [[ "$key" =~ ^common-[0-9]+$ ]]; then
     printf '%s\n' "$key"
   elif [[ "$key" =~ $key_pattern ]]; then
-    tr '[:lower:]' '[:upper:]' <<<"$key"
-  elif [[ "$key" =~ ^(.+)-([2-9]|[1-9][0-9]+)$ ]] \
-    && [[ "${BASH_REMATCH[1]}" =~ $key_pattern ]]; then
     tr '[:lower:]' '[:upper:]' <<<"$key"
   else
     return 1
@@ -62,27 +55,6 @@ branches_diverged() {
 
   ! git merge-base --is-ancestor "$local_ref" "$remote_ref" \
     && ! git merge-base --is-ancestor "$remote_ref" "$local_ref"
-}
-
-# Prints the label implied by this script's own resolved install path
-# and returns success only when exactly one known executor marker is present.
-detect_label() {
-  local invoked_dir="$1" marker segment found=""
-  local -a segments
-  IFS='/' read -r -a segments <<<"$invoked_dir"
-  for executor in ${AGENTS_EXECUTORS:-codex claude kilo cursor}; do
-    marker=".$executor"
-    for segment in "${segments[@]}"; do
-      if [[ "$segment" == "$marker" ]]; then
-        if [[ -n "$found" && "$found" != "$executor" ]]; then
-          return 1
-        fi
-        found="$executor"
-      fi
-    done
-  done
-  [[ -n "$found" ]] && { echo "$found"; return 0; }
-  return 1
 }
 
 # Prints the worktree path currently holding the given local branch ref, if

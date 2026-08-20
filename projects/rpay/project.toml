@@ -1,8 +1,6 @@
 # Карта носителя rpay — единственный слой конфигурации его периметра.
 #
-# Здесь живёт вся конфигурация периметра: корни, значения адаптеров,
-# исполнители, конвейеры, пороги и profile_rules. Слоя над картой нет. Секции
-# [mcp.*] запрещены: секреты живут в `.data/config.toml` этого каталога.
+# Здесь живёт вся конфигурация периметра: корни, значения адаптеров, пороги и profile_rules. Слоя над картой нет. Секции [mcp.*] запрещены: секреты живут в `.data/config.toml` этого каталога.
 #
 # Локальный проект станции: внешних трекера, wiki и vcs-хоста у него нет.
 # Артефакты каждой интеграции лежат папками в её каталоге — раскладка и
@@ -19,7 +17,7 @@ roots = ["."]
 product = "none"
 
 [docs_wiki]
-# Внешней wiki нет: пустой product выключает адаптер и spec-дискавери Triage.
+# Внешней wiki нет: пустой product выключает адаптер и spec-discovery в Define.
 # Спецификации читаются файлами каталога wiki/ интеграции.
 product = ""
 
@@ -36,19 +34,7 @@ profiles = ["./rpay-integrations.md"]
 branch_types = ["feature", "bugfix", "hotfix"]
 commit_title_format = "<KEY> <прошедшее время>"
 
-[sessions]
-executors = ["codex", "claude", "kilo", "cursor"]
-default_executors = ["codex", "claude", "kilo"]
-
 [thresholds]
-quality_pass_max_files = 2
-quality_pass_max_lines = 40
 heartbeat_seconds = 120
 heartbeat_ping_multiplier = 2
 heartbeat_dead_multiplier = 5
-
-[thresholds.retry_limits]
-verify_failed = 2
-review_cycles = 3
-changes_requested = 3
-completeness_recheck = 2
