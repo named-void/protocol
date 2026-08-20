@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Commit an accepted agent worktree and merge it into the canonical task branch.
 #
-# Usage: accept-worktree.sh <KEY> <branch-type> <commit-title> [label]
+# Usage: EXPECTED_CANONICAL_BASE=<full-sha> \
+#        accept-worktree.sh <KEY> <branch-type> <commit-title> [label]
 #
 # Branches:
 #   agent worktree: <type>/<KEY>-<label>
@@ -35,6 +36,7 @@
 #   24 commit failed
 #   25 merge failed (the worktree is intentionally left for resolution)
 #   26 cleanup failed after a successful merge
+#   27 canonical branch moved after candidate acceptance; no integration started
 #   64 usage error / invalid issue key or commit title
 #   65 unknown branch type
 
@@ -56,7 +58,7 @@ fi
 source "${_vcs_self%/*}/lib-git.sh"
 
 usage() {
-  echo "usage: accept-worktree.sh <KEY> <branch-type> <commit-title> [label]" >&2
+  echo "usage: EXPECTED_CANONICAL_BASE=<full-sha> accept-worktree.sh <KEY> <branch-type> <commit-title> [label]" >&2
   exit 64
 }
 
@@ -82,6 +84,9 @@ done
 "$valid_type" || fail 65 "conflict: unknown branch type '$TYPE' (expected ${branch_types[*]})"
 [[ "$COMMIT_TITLE" != *$'\n'* && "$COMMIT_TITLE" == "$KEY "* ]] \
   || fail 64 "conflict: commit title must be one line in format '$KEY <краткое описание в прошедшем времени>'"
+EXPECTED_CANONICAL_BASE="${EXPECTED_CANONICAL_BASE:-}"
+[[ "$EXPECTED_CANONICAL_BASE" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] \
+  || fail 64 "conflict: EXPECTED_CANONICAL_BASE must be a full Git commit SHA"
 
 SCRIPT_INVOKED_PATH="${BASH_SOURCE[0]}"
 case "$SCRIPT_INVOKED_PATH" in
@@ -120,6 +125,37 @@ has_local_branch "$canonical_branch" \
   || fail 22 "conflict: canonical branch '$canonical_branch' does not exist"
 has_local_branch "$agent_branch" \
   || fail 22 "conflict: agent branch '$agent_branch' does not exist"
+
+if ! expected_commit="$(git rev-parse --verify "${EXPECTED_CANONICAL_BASE}^{commit}" 2>/dev/null)" \
+  || [[ "$expected_commit" != "$EXPECTED_CANONICAL_BASE" ]]; then
+  fail 27 "stale: expected canonical base '$EXPECTED_CANONICAL_BASE' is unavailable"
+fi
+
+# Сравниваем с effective canonical после fetch, но до переключения веток,
+# commit accepted-изменений и merge. Код 25 уже начал интеграцию и оставил
+# canonical в task-worktree; его resume сохраняет прежний контракт.
+preflight_canonical_holder="$(worktree_holding_branch "$canonical_branch" || true)"
+preflight_agent_holder="$(worktree_holding_branch "$agent_branch" || true)"
+integration_already_started=false
+if [[ "$preflight_canonical_holder" == "$worktree_dir" && -z "$preflight_agent_holder" ]]; then
+  integration_already_started=true
+fi
+
+if ! "$integration_already_started"; then
+  effective_canonical_ref="refs/heads/$canonical_branch"
+  if has_origin_branch "$canonical_branch"; then
+    if branches_diverged "refs/heads/$canonical_branch" "refs/remotes/origin/$canonical_branch"; then
+      fail 12 "conflict: '$canonical_branch' diverged from origin, resolve manually"
+    fi
+    if git merge-base --is-ancestor "refs/heads/$canonical_branch" "refs/remotes/origin/$canonical_branch"; then
+      effective_canonical_ref="refs/remotes/origin/$canonical_branch"
+    fi
+  fi
+  actual_canonical_base="$(git rev-parse "$effective_canonical_ref")"
+  if [[ "$actual_canonical_base" != "$EXPECTED_CANONICAL_BASE" ]]; then
+    fail 27 "stale: canonical branch '$canonical_branch' moved: expected '$EXPECTED_CANONICAL_BASE', got '$actual_canonical_base'"
+  fi
+fi
 
 # Освобождает канон, занятый чужим checkout, — но только когда переключение
 # для него незаметно: дерево чисто, а канон стоит ровно на локальной базовой

@@ -6,7 +6,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "skills" / "git-workflow" / "scripts" / "sync-branch.sh"
 ACCEPT = ROOT / "skills" / "git-workflow" / "scripts" / "accept-worktree.sh"
@@ -94,6 +93,7 @@ class SyncBranchTest(VcsScriptTestCase):
         return subprocess.run(
             args,
             cwd=cwd or repository,
+            check=False,
             env=env,
             text=True,
             capture_output=True,
@@ -126,11 +126,29 @@ class SyncBranchTest(VcsScriptTestCase):
         label: str = "claude",
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
+        expected_base: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
+        effective_env = dict(env or os.environ)
+        if expected_base is not None:
+            effective_env["EXPECTED_CANONICAL_BASE"] = expected_base
+        elif "EXPECTED_CANONICAL_BASE" not in effective_env:
+            normalized_key = key if key.startswith("common-") else key.upper()
+            canonical_ref = f"refs/heads/{branch_type}/{normalized_key}"
+            resolved = subprocess.run(
+                ["git", "rev-parse", "--verify", canonical_ref],
+                cwd=repository,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            effective_env["EXPECTED_CANONICAL_BASE"] = (
+                resolved.stdout.strip() if resolved.returncode == 0 else "0" * 40
+            )
         return subprocess.run(
             [str(ACCEPT), key, branch_type, title, label],
             cwd=cwd or repository,
-            env=env,
+            check=False,
+            env=effective_env,
             text=True,
             capture_output=True,
         )
@@ -533,6 +551,7 @@ class SyncBranchTest(VcsScriptTestCase):
         result = subprocess.run(
             [str(symlinked_script), "UPL-22", "feature"],
             cwd=work,
+            check=False,
             env=self.env_without_executor(),
             text=True,
             capture_output=True,
@@ -699,6 +718,68 @@ class SyncBranchTest(VcsScriptTestCase):
         self.assertEqual(0, second.returncode, second.stderr)
         self.assertEqual("claude", self.git_output(work, "show", "feature/UPL-31:claude.txt"))
         self.assertEqual("codex", self.git_output(work, "show", "feature/UPL-31:codex.txt"))
+
+    def test_accept_rejects_stale_expected_canonical_base_before_commit(self) -> None:
+        remote, _ = self.remote_repository()
+        work = self.clone(remote)
+        self.assertEqual(0, self.run_script(work, "UPL-39", "feature", "claude").returncode)
+        self.assertEqual(0, self.run_script(work, "UPL-39", "feature", "codex").returncode)
+        canonical_base = self.git_output(work, "rev-parse", "feature/UPL-39")
+        claude_worktree = self.worktree_path(work, "UPL-39", "claude")
+        codex_worktree = self.worktree_path(work, "UPL-39", "codex")
+        (claude_worktree / "claude.txt").write_text("claude\n")
+        (codex_worktree / "codex.txt").write_text("codex\n")
+
+        first = self.accept(
+            work,
+            "UPL-39",
+            "feature",
+            "UPL-39 Добавлена часть Claude",
+            "claude",
+            expected_base=canonical_base,
+        )
+        stale = self.accept(
+            work,
+            "UPL-39",
+            "feature",
+            "UPL-39 Добавлена часть Codex",
+            "codex",
+            expected_base=canonical_base,
+        )
+
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assertEqual(27, stale.returncode, stale.stderr)
+        self.assertIn("stale:", stale.stderr)
+        self.assertTrue(codex_worktree.exists())
+        self.assertTrue((codex_worktree / "codex.txt").is_file())
+        self.assertNotIn("codex.txt", self.git_output(work, "ls-tree", "-r", "--name-only", "feature/UPL-39"))
+
+    def test_accept_detects_remote_canonical_move_before_local_fast_forward(self) -> None:
+        remote, seed = self.remote_repository()
+        work = self.clone(remote)
+        self.assertEqual(0, self.run_script(work, "UPL-43", "feature").returncode)
+        worktree = self.worktree_path(work, "UPL-43")
+        canonical_base = self.git_output(work, "rev-parse", "feature/UPL-43")
+        self.git(work, "push", "origin", "feature/UPL-43")
+        self.git(seed, "fetch", "origin")
+        self.git(seed, "switch", "-c", "feature/UPL-43", "origin/feature/UPL-43")
+        self.git(seed, "commit", "--allow-empty", "-m", "remote canonical move")
+        self.git(seed, "push", "origin", "feature/UPL-43")
+        (worktree / "candidate.txt").write_text("candidate\n")
+
+        stale = self.accept(
+            work,
+            "UPL-43",
+            "feature",
+            "UPL-43 Добавлен кандидат",
+            expected_base=canonical_base,
+        )
+
+        self.assertEqual(27, stale.returncode, stale.stderr)
+        self.assertIn("stale:", stale.stderr)
+        self.assertTrue(worktree.exists())
+        self.assertTrue((worktree / "candidate.txt").is_file())
+        self.assertEqual(canonical_base, self.git_output(work, "rev-parse", "feature/UPL-43"))
 
     def test_accept_rejects_commit_title_without_issue_key(self) -> None:
         remote, _ = self.remote_repository()

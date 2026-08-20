@@ -1,24 +1,105 @@
 #!/usr/bin/env bash
-# Финальные проверки сервиса на базе шаблона templ-service.
+# Подготовка и финальная проверка сервиса на базе шаблона templ-service.
 # Живёт в carrier `protocol/projects/upl`; запускать из корня сервисного repo.
 # Сервис-специфика берется из окружения: SERVICE_ROOT (git toplevel), configs/.env и .env,
 # DB_CONTAINER для нестандартного имени контейнера БД.
+#
+# Usage:
+#   final-checks.sh prepare
+#   CANDIDATE_REF=<full-sha> final-checks.sh verify
+#
+# prepare запускает mutating project checks в рабочем Implementation worktree.
+# verify проверяет точный candidate в disposable worktree и не меняет target.
 set -u
 
-SERVICE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+MODE="${1:-}"
+if [[ $# -ne 1 || ( "$MODE" != "prepare" && "$MODE" != "verify" ) ]]; then
+  printf 'usage: %s prepare | CANDIDATE_REF=<full-sha> %s verify\n' "$0" "$0" >&2
+  exit 64
+fi
+
+ORIGINAL_SERVICE_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 # Сам скрипт лежит в git-репозитории проектного слоя, поэтому git-toplevel сервис
 # не опознаёт: запуск из каталога скрипта дал бы проверку чужого дерева с
 # правдоподобными сигналами. Признак сервиса — go.mod в корне.
-if [[ ! -f "$SERVICE_ROOT/go.mod" ]]; then
-  printf 'блокер: %s не сервисный репозиторий (go.mod в корне не найден) — запускай из корня сервиса\n' "$SERVICE_ROOT" >&2
+if [[ ! -f "$ORIGINAL_SERVICE_ROOT/go.mod" ]]; then
+  printf 'блокер: %s не сервисный репозиторий (go.mod в корне не найден) — запускай из корня сервиса\n' "$ORIGINAL_SERVICE_ROOT" >&2
   exit 99
 fi
+
+VERIFY_PARENT=""
+VERIFY_ROOT=""
+cleanup_verify_worktree() {
+  local exit_code=$? cleanup_code=0
+  trap - EXIT
+  if [[ -n "$VERIFY_ROOT" ]]; then
+    git -C "$ORIGINAL_SERVICE_ROOT" worktree remove --force "$VERIFY_ROOT" >/dev/null 2>&1 \
+      || cleanup_code=99
+  fi
+  if [[ -n "$VERIFY_PARENT" && -d "$VERIFY_PARENT" ]]; then
+    rmdir "$VERIFY_PARENT" >/dev/null 2>&1 || cleanup_code=99
+  fi
+  if [[ "$exit_code" -eq 0 && "$cleanup_code" -ne 0 ]]; then
+    exit_code="$cleanup_code"
+  fi
+  exit "$exit_code"
+}
+trap cleanup_verify_worktree EXIT
+
+CANDIDATE="unsealed"
+SERVICE_ROOT="$ORIGINAL_SERVICE_ROOT"
+VERIFY_SEED_PATH_LIST=()
+if [[ "$MODE" == "verify" ]]; then
+  if [[ ! "${CANDIDATE_REF:-}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]]; then
+    printf 'блокер: verify требует CANDIDATE_REF с полным Git SHA\n' >&2
+    exit 99
+  fi
+  CANDIDATE="$(git -C "$ORIGINAL_SERVICE_ROOT" rev-parse --verify "${CANDIDATE_REF}^{commit}" 2>/dev/null)" \
+    || { printf 'блокер: CANDIDATE_REF не разрешается в commit: %s\n' "$CANDIDATE_REF" >&2; exit 99; }
+  if [[ "$CANDIDATE" != "$CANDIDATE_REF" ]]; then
+    printf 'блокер: CANDIDATE_REF должен быть canonical full SHA: %s != %s\n' "$CANDIDATE_REF" "$CANDIDATE" >&2
+    exit 99
+  fi
+  if [[ "$(git -C "$ORIGINAL_SERVICE_ROOT" rev-parse HEAD)" != "$CANDIDATE" ]]; then
+    printf 'блокер: HEAD target не совпадает с CANDIDATE_REF\n' >&2
+    exit 99
+  fi
+  if [[ -n "$(git -C "$ORIGINAL_SERVICE_ROOT" status --porcelain)" ]]; then
+    printf 'блокер: verify требует чистый target worktree\n' >&2
+    exit 99
+  fi
+
+  VERIFY_PARENT="$(mktemp -d "${TMPDIR:-/tmp}/upl-final-checks-verify.XXXXXX")" \
+    || { printf 'блокер: не удалось создать disposable каталог verify\n' >&2; exit 99; }
+  VERIFY_ROOT="$VERIFY_PARENT/worktree"
+  git -C "$ORIGINAL_SERVICE_ROOT" worktree add --quiet --detach "$VERIFY_ROOT" "$CANDIDATE" \
+    || { printf 'блокер: не удалось создать disposable worktree для %s\n' "$CANDIDATE" >&2; exit 99; }
+  SERVICE_ROOT="$VERIFY_ROOT"
+
+  # Некоторые UPL-сервисы собираются с gitignored generated inputs. Копируем
+  # только явно перечисленные относительные пути и после прогона сравниваем их
+  # с target, чтобы mutating verify не прошёл незамеченным.
+  read -r -a VERIFY_SEED_PATH_LIST <<< "${FINAL_CHECKS_VERIFY_SEED_PATHS:-api/docs}"
+  for relative_path in "${VERIFY_SEED_PATH_LIST[@]}"; do
+    if [[ "$relative_path" = /* || "$relative_path" == ".." || "$relative_path" == ../* \
+      || "$relative_path" == */.. || "$relative_path" == */../* ]]; then
+      printf 'блокер: небезопасный FINAL_CHECKS_VERIFY_SEED_PATHS: %s\n' "$relative_path" >&2
+      exit 99
+    fi
+    if [[ -e "$ORIGINAL_SERVICE_ROOT/$relative_path" ]]; then
+      mkdir -p "$(dirname "$VERIFY_ROOT/$relative_path")"
+      cp -R "$ORIGINAL_SERVICE_ROOT/$relative_path" "$VERIFY_ROOT/$relative_path" \
+        || { printf 'блокер: не удалось скопировать verify input %s\n' "$relative_path" >&2; exit 99; }
+    fi
+  done
+fi
+
 # Имя сервиса — из основного рабочего дерева репозитория, а не из каталога
 # worktree: в worktree задачи basename даёт имя каталога (probe-736), и кандидат
 # ${SERVICE_NAME}-db никогда не совпадает с контейнером стенда (SB-118).
 SERVICE_MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || printf '%s/.git' "$SERVICE_ROOT")")"
 SERVICE_NAME="$(basename "$SERVICE_MAIN_ROOT")"
-LOG_DIR="${TMPDIR:-/tmp}/${SERVICE_NAME}-final-checks-$(date +%Y%m%d%H%M%S)-$$"
+LOG_DIR="${TMPDIR:-/tmp}/${SERVICE_NAME}-final-checks-${MODE}-$(date +%Y%m%d%H%M%S)-$$"
 SUMMARY_FILE="$LOG_DIR/summary.txt"
 CHANGED_FILE="$LOG_DIR/changed-files.txt"
 STATUS_FILE="$LOG_DIR/git-status.txt"
@@ -41,6 +122,9 @@ failed=0
 status() {
   printf '%s: %s\n' "$1" "$2" | tee -a "$SUMMARY_FILE"
 }
+
+status "mode" "$MODE"
+status "candidate" "$CANDIDATE"
 
 summarize_failure() {
   local log_file="$1"
@@ -101,8 +185,6 @@ collect_changed_files() {
     git diff --cached --name-only
     git ls-files --others --exclude-standard
   } | sort -u > "$CHANGED_FILE" 2>"$LOG_DIR/changed-files.err"
-
-  git status --short > "$STATUS_FILE" 2>"$LOG_DIR/git-status.err"
 }
 
 needs_migration_check() {
@@ -318,8 +400,28 @@ else
   status "migration up/down" "пропущено: в диффе задачи нет миграций (база: ${BASE_REF:-не определена})"
 fi
 
+if [[ "$MODE" == "verify" ]]; then
+  for relative_path in "${VERIFY_SEED_PATH_LIST[@]}"; do
+    source_seed="$ORIGINAL_SERVICE_ROOT/$relative_path"
+    verify_seed="$VERIFY_ROOT/$relative_path"
+    if [[ ! -e "$source_seed" && ! -e "$verify_seed" ]]; then
+      continue
+    fi
+    if [[ ! -e "$source_seed" || ! -e "$verify_seed" ]] \
+      || ! diff -qr "$source_seed" "$verify_seed" >/dev/null 2>&1; then
+      failed=1
+      status "seeded artifact purity" "не пройдено: $relative_path изменён project checks"
+    fi
+  done
+fi
+
+git status --short > "$STATUS_FILE" 2>"$LOG_DIR/git-status.err"
 if [[ -s "$STATUS_FILE" ]]; then
   status "git status --short" "есть изменения"
+  if [[ "$MODE" == "verify" ]]; then
+    failed=1
+    status "candidate purity" "не пройдено: project checks изменили disposable snapshot"
+  fi
 else
   status "git status --short" "чисто"
 fi
