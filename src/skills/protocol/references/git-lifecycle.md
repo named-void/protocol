@@ -38,14 +38,14 @@
 
 ## Обновление базы кандидата
 
-В конце Implementation после проверенного промежуточного candidate commit, но перед mutating project prepare и созданием финального candidate, обнови канонический ref:
+В конце Implementation после prepare, запланированных проверок и candidate commit, но перед read-only project verify и checker, обнови канонический ref:
 
 1. Убедись, что tracked-состояние worktree проверено, закоммичено и чисто. Повтори Branch-Sync той же командой и с теми же параметрами: она выполнит fetch, обновит локальный канонический ref и не сольёт его в ветвь исполнителя, если у неё уже есть собственные коммиты.
 2. Получи `CURRENT_CANONICAL_BASE` командой `git rev-parse "$CANONICAL_REF^{commit}"`. Если он равен сохранённому `CANONICAL_BASE`, дополнительный sync не нужен.
-3. Если SHA изменился, в `WORKTREE_ROOT` выполни `git merge --no-edit "$CANONICAL_REF"`. Конфликт блокирует продолжение до явного разрешения. После успешного merge установи `CANONICAL_BASE=$CURRENT_CANONICAL_BASE`.
-4. Сдвиг базы аннулирует прежний manifest, Implementation checker и Acceptance. Повтори mutating prepare, все запланированные проверки, read-only verify, sealing и полный Implementation checker; fast path в первой версии нет.
+3. Если SHA изменился, в `WORKTREE_ROOT` выполни `git merge --no-edit "$CANONICAL_REF"`. Конфликт блокирует продолжение до явного разрешения. После успешного merge установи `CANONICAL_BASE=$CURRENT_CANONICAL_BASE`, повтори mutating prepare и все запланированные проверки, закоммить созданный diff при его наличии и снова выполни этот base gate.
+4. Сдвиг базы аннулирует прежние project verify, Implementation checker и Acceptance. После стабилизации базы выполни read-only verify и полный Implementation checker; fast path в первой версии нет.
 
-В начале Acceptance повтори только Branch-Sync и проверку manifest. Если канонический ref сдвинулся, не выполняй merge внутри Acceptance: состояние `stale` возвращает задачу на этап 5, где применяется порядок выше.
+В начале Acceptance повтори только Branch-Sync и сравнение `CANONICAL_REF` с сохранённым `CANONICAL_BASE`. Если ref сдвинулся, не выполняй merge внутри Acceptance: состояние `stale` возвращает задачу на этап 5, где применяется порядок выше.
 
 ## Локальная приёмка
 
