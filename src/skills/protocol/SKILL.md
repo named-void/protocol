@@ -9,15 +9,26 @@ description: 'Триггеры: явная команда пользовател
 
 Перед первым действием протокола:
 
-1. Разреши физический корень protocol и каталог справочников через установленный skill-link:
+1. В первом shell-вызове protocol возьми абсолютный путь к этому `SKILL.md` из результата начального `find -L`, подставь имя текущего CLI и выполни весь блок целиком:
 
    ```bash
-   PROTOCOL_SKILL="$(realpath "$AGENT_SKILLS_DIR/protocol")"
+   set -eu
+
+   PROTOCOL_SKILL_FILE='<абсолютный путь к protocol/SKILL.md из результата find -L>'
+   PROTOCOL_AGENT='<имя текущего CLI: codex, claude, cursor или kilo>'
+   PROTOCOL_SKILL="$(dirname "$(realpath "$PROTOCOL_SKILL_FILE")")"
    PROTOCOL_SRC="$(cd "$PROTOCOL_SKILL/../.." && pwd -P)"
    PROTOCOL_INSTRUCTIONS="$PROTOCOL_SRC/instructions"
+
+   test -r "$PROTOCOL_INSTRUCTIONS/environment.md"
+   test -r "$PROTOCOL_SRC/lib/skills_config.py"
+   cat "$PROTOCOL_INSTRUCTIONS/environment.md"
+
+   PROTOCOL_AGENT_INSTRUCTIONS="$PROTOCOL_INSTRUCTIONS/agent-$PROTOCOL_AGENT.md"
+   test ! -e "$PROTOCOL_AGENT_INSTRUCTIONS" || cat "$PROTOCOL_AGENT_INSTRUCTIONS"
    ```
 
-2. До первой shell-команды, проверки, ожидания или файловой правки прочитай `$PROTOCOL_INSTRUCTIONS/environment.md` и справочник `$PROTOCOL_INSTRUCTIONS/agent-<имя-исполнителя>.md` текущего CLI. Имя оболочки не является именем CLI; отсутствующий справочник не блокирует маршрут. До этого чтения разрешены только symlink-aware обход каталога skills и вычисление путей выше.
+2. До этого блока разрешены только symlink-aware обход каталога skills и чтение самого навыка. Имя оболочки не является именем CLI; отсутствующий справочник исполнителя не блокирует маршрут. Сохрани вычисленные абсолютные значения как константы контекста сессии. Shell-переменные между вызовами не сохраняются: в каждом следующем shell-вызове присваивай нужным переменным сохранённые абсолютные значения в этом же вызове.
 3. Получи корень карт командой `python3 "$PROTOCOL_SRC/lib/skills_config.py" projects-root`. Данные периметра находятся в `<projects-root>/<project>/`, локальные секреты — в `<project>/.data/config.toml`; секреты в Git не включай.
 
 Протокол выполняется в подготовленном пользователем Git-репозитории и не инициализирует его. Репозиторий, содержащий сам `protocol`, не используй как каталог исполнения задачи.
