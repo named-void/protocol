@@ -28,7 +28,7 @@ description: 'Триггеры: явный запрос read-only проверк
 
 Для каждого прохода сабагент сразу записывает в `progress` локальное время, текущий этап, последнее завершённое и текущее действие, затем обновляет запись при смене этапа и не реже `thresholds.heartbeat_seconds`. Используй этапы `preflight`, `requirements`, `diff`, `findings`, `final-snapshot` и `done`.
 
-Координатор определяет живость только по обновлениям `progress` самим сабагентом. После `thresholds.heartbeat_seconds × thresholds.heartbeat_ping_multiplier` без обновления отправь один ping; ping не считается heartbeat. После `thresholds.heartbeat_seconds × thresholds.heartbeat_dead_multiplier` верни `blocked`. Если карта не задаёт пороги, используй `120`, `2` и `5`.
+Координатор определяет живость только по обновлениям `progress` самим сабагентом и отсчитывает оба интервала от времени последнего такого обновления. После `thresholds.heartbeat_seconds × thresholds.heartbeat_ping_multiplier` отправь один ping; ping и другая активность координатора не меняют точку отсчёта. После `thresholds.heartbeat_seconds × thresholds.heartbeat_dead_multiplier` с момента последнего обновления `progress` самим сабагентом верни `blocked`. Если карта не задаёт пороги, используй `120`, `2` и `5`.
 
 ## Findings и рекомендация
 
