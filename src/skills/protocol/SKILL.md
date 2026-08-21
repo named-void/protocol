@@ -22,14 +22,14 @@ description: 'Триггеры: явная команда пользовател
 
    test -r "$PROTOCOL_INSTRUCTIONS/environment.md"
    test -r "$PROTOCOL_SRC/lib/skills_config.py"
+   printf 'PROTOCOL_SKILL=%s\nPROTOCOL_SRC=%s\n' "$PROTOCOL_SKILL" "$PROTOCOL_SRC"
    cat "$PROTOCOL_INSTRUCTIONS/environment.md"
 
    PROTOCOL_AGENT_INSTRUCTIONS="$PROTOCOL_INSTRUCTIONS/agent-$PROTOCOL_AGENT.md"
    test ! -e "$PROTOCOL_AGENT_INSTRUCTIONS" || cat "$PROTOCOL_AGENT_INSTRUCTIONS"
    ```
 
-2. Отсутствующий справочник исполнителя не блокирует маршрут. Сохрани вычисленные абсолютные значения как константы контекста сессии. Shell-переменные между вызовами не сохраняются: в каждом следующем shell-вызове присваивай нужным переменным сохранённые абсолютные значения в этом же вызове.
-3. Получи корень карт командой `python3 "$PROTOCOL_SRC/lib/skills_config.py" projects-root`. Данные периметра находятся в `<projects-root>/<project>/`, локальные секреты — в `<project>/.data/config.toml`; секреты в Git не включай.
+2. Отсутствующий справочник исполнителя не блокирует маршрут. Сохрани выведенные `PROTOCOL_SKILL` и `PROTOCOL_SRC` как константы контекста сессии. Shell-переменные между вызовами не сохраняются: в каждом следующем shell-вызове присваивай нужным переменным сохранённые абсолютные значения в этом же вызове.
 
 Протокол выполняется в подготовленном пользователем Git-репозитории и не инициализирует его. Репозиторий, содержащий сам `protocol`, не используй как каталог исполнения задачи.
 

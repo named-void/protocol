@@ -4,7 +4,7 @@
 
 1. Засей конфигурацию командой `eval "$(python3 "$PROTOCOL_SRC/lib/skills_config.py" export-env)"`.
 2. Для issue выбери тип из `vcs.branch_types`: явный тип приоритетен, `Bug` даёт `bugfix`, срочное исправление продуктивного сбоя — `hotfix`, остальное — `feature`. Для `common-N` используй `protocol`.
-3. Выполни `"$AGENT_SKILLS_DIR/git-workflow/scripts/sync-branch.sh" <task> <type>`. Если `origin` не настроен и проект намеренно локальный, добавь `AGENTS_LOCAL_ONLY=1`; настроенный `origin` этим флагом не обходи.
+3. Выполни `"$PROTOCOL_SKILL/../git-workflow/scripts/sync-branch.sh" <task> <type>`. Если `origin` не настроен и проект намеренно локальный, добавь `AGENTS_LOCAL_ONLY=1`; настроенный `origin` этим флагом не обходи.
 4. Ненулевой код блокирует маршрут. Из строки `created:`, `switched:` или `current:` получи task-ветку и `WORKTREE_ROOT`, сверь `git status --short` и продолжай только в этом worktree.
 
 Скрипт создаёт одну ветку `<type>/<task>` непосредственно в изолированном worktree. Отдельной агентской или интеграционной ветки нет.
