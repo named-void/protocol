@@ -4,7 +4,6 @@ import re
 import unittest
 from pathlib import Path
 
-
 ROOT = Path(__file__).parents[1]
 DESCRIPTION_WITH_TRIGGER = re.compile(
     r"^description:\s*.*\bТриггер(?:ы)?\s*:", re.MULTILINE

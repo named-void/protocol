@@ -9,13 +9,12 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
-
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
 from mcp_http import MCPError, StreamableHTTPClient, load_server_config
-
 
 # Разные версии Jira отдают поля Greenhopper toString() в разном порядке;
 # оба варианта должны нормализоваться одинаково.
@@ -31,12 +30,12 @@ SPRINT_RAW_NAME_BEFORE_STATE = (
 
 class MCPHandler(BaseHTTPRequestHandler):
     deleted = False
-    methods = []
+    methods: ClassVar[list[str]] = []
     received_header = None
-    tool_calls = []
-    get_paths = []
+    tool_calls: ClassVar[list[dict]] = []
+    get_paths: ClassVar[list[str]] = []
     get_authorization = None
-    issue_extra_fields = {}
+    issue_extra_fields: ClassVar[dict[str, object]] = {}
 
     def log_message(self, *_: object) -> None:
         pass
@@ -283,9 +282,10 @@ class TrackerClientTest(unittest.TestCase):
 
     def test_tool_error_is_not_returned_as_success(self) -> None:
         config = load_server_config("jira")
-        with StreamableHTTPClient(config) as client:
-            with self.assertRaisesRegex(MCPError, "expected failure"):
-                client.call_tool("jira_fail", {})
+        with StreamableHTTPClient(config) as client, self.assertRaisesRegex(
+            MCPError, "expected failure"
+        ):
+            client.call_tool("jira_fail", {})
 
     def test_issue_shortcut_calls_tool_without_listing_schema(self) -> None:
         result = self._run("issue", "UPL-490")

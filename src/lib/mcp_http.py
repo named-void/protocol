@@ -9,16 +9,15 @@ import sys
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from skills_config import (  # noqa: E402
+from skills_config import (
     get_section,
     identify_project,
     secrets_path,
 )
-
 
 PROTOCOL_VERSION = "2025-03-26"
 
@@ -80,7 +79,7 @@ class StreamableHTTPClient:
         self.session_id: str | None = None
         self.request_id = 0
 
-    def __enter__(self) -> StreamableHTTPClient:
+    def __enter__(self) -> Self:
         self.initialize()
         return self
 

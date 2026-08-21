@@ -47,16 +47,16 @@ import re
 import shlex
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 from typing import Any
 
+import tomllib
 
 COMMON_PROJECT = "_common"
 COMMON_TASK_PATTERN = re.compile(r"^common-(\d+)$")
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _git_main_repo() -> Path | None:
     # Корень ОСНОВНОГО репозитория правил. При запуске из git worktree
     # (.claude/worktrees/…) якорь по файлу указывает на worktree, а не на
@@ -437,7 +437,7 @@ def get_value(dotted: str, default: str | None = None) -> str:
             return default
         raise
     if isinstance(value, (dict, list)):
-        raise ValueError(f"key '{dotted}' is structured, not a scalar")
+        raise TypeError(f"key '{dotted}' is structured, not a scalar")
     return str(value)
 
 

@@ -5,7 +5,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 SCRIPT = Path(__file__).parents[1] / "skills" / "mreviewer" / "scripts" / "resolve_mr.py"
 SPEC = importlib.util.spec_from_file_location("resolve_mr", SCRIPT)
 assert SPEC and SPEC.loader

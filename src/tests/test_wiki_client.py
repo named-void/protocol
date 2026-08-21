@@ -9,20 +9,21 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import ClassVar
 from unittest.mock import patch
 
 
 class MCPHandler(BaseHTTPRequestHandler):
-    methods = []
-    tool_calls = []
+    methods: ClassVar[list[str]] = []
+    tool_calls: ClassVar[list[dict]] = []
     tool_result_text = "{}"
     # Копия результата в structuredContent — часть ответа реального сервера
     # (SB-212): без неё тест не видит второго носителя тела страницы.
     tool_result_structured = None
     # REST-канал статусов резолюции (SB-217): пути запросов и порции ответа —
     # список списков, по одной порции на запрос.
-    get_paths = []
-    rest_pages = [[]]
+    get_paths: ClassVar[list[str]] = []
+    rest_pages: ClassVar[list[list[dict[str, object]]]] = [[]]
 
     def log_message(self, *_: object) -> None:
         pass

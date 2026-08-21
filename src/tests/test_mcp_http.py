@@ -8,7 +8,6 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-
 sys.path.insert(0, str(Path(__file__).parents[1] / "lib"))
 
 from mcp_http import MCPError, StreamableHTTPClient, rest_get
@@ -17,7 +16,7 @@ from mcp_http import MCPError, StreamableHTTPClient, rest_get
 def sse_event(payload: dict, *, newline: str = "\n") -> bytes:
     """Одно SSE-событие с телом ответа в единственном поле `data:`."""
     body = json.dumps(payload, ensure_ascii=False)
-    return f"event: message{newline}data: {body}{newline}{newline}".encode("utf-8")
+    return f"event: message{newline}data: {body}{newline}{newline}".encode()
 
 
 class DecodeResponseTest(unittest.TestCase):
@@ -78,17 +77,13 @@ class RestGetTest(unittest.TestCase):
         carrier.write_text('[docs_wiki]\nproduct = "confluence"\n')
         secrets = Path(self.temp_dir.name) / "secrets.toml"
         secrets.write_text(
-            "\n".join(
-                [
-                    "[mcp.confluence]",
-                    'url = "http://127.0.0.1:9/mcp"',
-                    "",
-                    "[mcp.confluence.http_headers]",
-                    'X-Url = "not-a-url"',
-                    'X-Token = "pat-secret"',
-                    "",
-                ]
-            )
+            """[mcp.confluence]
+url = "http://127.0.0.1:9/mcp"
+
+[mcp.confluence.http_headers]
+X-Url = "not-a-url"
+X-Token = "pat-secret"
+"""
         )
         patcher = patch.dict(
             os.environ,

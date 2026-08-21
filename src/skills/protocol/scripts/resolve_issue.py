@@ -10,11 +10,10 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-
 SOURCE_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(SOURCE_ROOT / "lib"))
 
-import skills_config  # noqa: E402
+import skills_config
 
 
 class ResolveError(ValueError):

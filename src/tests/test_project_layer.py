@@ -11,12 +11,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-
 ROOT = Path(__file__).parents[1]
 CONFIG = ROOT / "lib" / "skills_config.py"
 sys.path.insert(0, str(ROOT / "lib"))
 
-import skills_config  # noqa: E402
+import skills_config
 
 # Карта носителя работы вне проекта — она же фикстура «своих» значений.
 OUTSIDE = """\

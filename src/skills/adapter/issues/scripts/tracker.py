@@ -9,7 +9,7 @@ from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "lib"))
 
-from mcp_http import (  # noqa: E402
+from mcp_http import (
     MCPError,
     emit_output,
     execute,
@@ -17,7 +17,7 @@ from mcp_http import (  # noqa: E402
     parse_arguments,
     rest_get,
 )
-from skills_config import adapter_is_off, get_value  # noqa: E402
+from skills_config import adapter_is_off, get_value
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
