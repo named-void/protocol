@@ -51,6 +51,8 @@ class ResolveMrTest(unittest.TestCase):
             )
             rules = root / "upl.md"
             rules.write_text("# rules\n", encoding="utf-8")
+            review_rules = root / "upl-review.md"
+            review_rules.write_text("# review rules\n", encoding="utf-8")
             with (
                 mock.patch.object(
                     resolve_mr.skills_config,
@@ -66,6 +68,11 @@ class ResolveMrTest(unittest.TestCase):
                     "profiles_for_path",
                     return_value=[rules],
                 ),
+                mock.patch.object(
+                    resolve_mr.skills_config,
+                    "mreviewer_rules",
+                    return_value=[review_rules],
+                ),
             ):
                 result = resolve_mr.resolve(
                     "https://gitlab.example.com/getblogger/upl/services/catalog/-/merge_requests/7"
@@ -74,7 +81,10 @@ class ResolveMrTest(unittest.TestCase):
             self.assertEqual(str(checkout.resolve()), result["local_path"])
             self.assertTrue(result["local_exists"])
             self.assertTrue(result["checkout_matches"])
-            self.assertEqual([str(rules.resolve())], result["rules_paths"])
+            self.assertEqual(
+                [str(rules.resolve()), str(review_rules.resolve())],
+                result["rules_paths"],
+            )
             self.assertTrue(result["rules_exist"])
 
     def test_rejects_checkout_with_different_origin(self) -> None:
@@ -112,6 +122,9 @@ class ResolveMrTest(unittest.TestCase):
             ),
             mock.patch.object(
                 resolve_mr.skills_config, "profiles_for_path", return_value=[]
+            ),
+            mock.patch.object(
+                resolve_mr.skills_config, "mreviewer_rules", return_value=[]
             ),
         ):
             result = resolve_mr.resolve(
