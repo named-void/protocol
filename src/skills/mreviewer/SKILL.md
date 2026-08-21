@@ -29,17 +29,9 @@ description: 'Триггеры: явный URL GitLab Merge Request и прос�
 
 ## Контекст MR
 
-1. Проверь `git status --short` локального checkout. Не переключай ветку и не
-   очищай пользовательские изменения.
-2. Через `$adapter-vcs` получи metadata, ветки, SHA, changes, все страницы
-   discussions и pipelines. Host, project и IID бери из результата resolver.
-3. До собственных findings прочитай существующие discussions. Сразу исключай
-   замечание, если тот же дефект уже опубликован без нового доказательства; не
-   сохраняй такой дубликат среди findings или отклонённых предположений.
-4. Получи target branch и `refs/merge-requests/<iid>/head` отдельной
-   fetch-командой; это работает и для MR из fork. Анализируй неизменяемый
-   снимок `BASE...CANDIDATE`, где `BASE` — merge-base актуальной target branch
-   и MR head, `CANDIDATE` — source SHA из GitLab. Не делай checkout/reset.
+1. Проверь `git status --short` локального checkout; не переключай ветку и не очищай пользовательские изменения.
+2. Через `$adapter-vcs` получи metadata, diff, discussions и точные SHA target branch и MR head. Host, project и IID бери из результата resolver. Анализируй неизменяемый снимок `BASE...CANDIDATE` без checkout/reset, где `BASE` — merge-base target branch и MR head, а `CANDIDATE` — source SHA.
+3. До собственных findings прочитай discussions и исключи уже опубликованный дубликат, если нет нового доказательства.
 
 ## Ревью
 
