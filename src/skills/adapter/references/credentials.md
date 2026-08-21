@@ -51,11 +51,6 @@ http_headers = { "<Header-Product-Url>" = "https://<product-host>", "<Header-Per
 
 ## Проверка
 
-- `python3 "$PROTOCOL_SRC/scripts/check-mcp.py"` проверяет все серверы и
-  печатает `ok: … reachable` либо `fail:` с причиной, не раскрывая URL,
-  заголовки и токены. Перед использованием прочитай
-  `$AGENT_SKILLS_DIR/protocol/SKILL.md`, раздел `Bootstrap`; он устанавливает
-  `PROTOCOL_SRC`.
 - `python3 "$AGENT_SKILLS_DIR/adapter-issues/scripts/tracker.py" tools`
   проверяет живой доступ к issue tracker.
 - `python3 "$AGENT_SKILLS_DIR/adapter-wiki/scripts/wiki.py" tools` проверяет

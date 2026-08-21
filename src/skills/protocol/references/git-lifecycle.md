@@ -1,7 +1,5 @@
 # Жизненный цикл Git
 
-Перед использованием прочитай `$PROTOCOL_SKILL/SKILL.md`, раздел `Bootstrap`, и навык `git-workflow`.
-
 ## Branch-Sync
 
 1. Засей конфигурацию командой `eval "$(python3 "$PROTOCOL_SRC/lib/skills_config.py" export-env)"`.
