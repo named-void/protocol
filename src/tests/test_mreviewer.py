@@ -82,7 +82,7 @@ class ResolveMrTest(unittest.TestCase):
             self.assertTrue(result["local_exists"])
             self.assertTrue(result["checkout_matches"])
             self.assertEqual(
-                [str(rules.resolve()), str(review_rules.resolve())],
+                [str(review_rules.resolve()), str(rules.resolve())],
                 result["rules_paths"],
             )
             self.assertTrue(result["rules_exist"])

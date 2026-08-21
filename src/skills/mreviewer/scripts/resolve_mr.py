@@ -73,8 +73,8 @@ def resolve(url: str) -> dict[str, object]:
             dict.fromkeys(
                 Path(path).resolve()
                 for path in [
-                    *skills_config.profiles_for_path(local_path),
                     *skills_config.mreviewer_rules(str(project["name"])),
+                    *skills_config.profiles_for_path(local_path),
                 ]
             )
         )
