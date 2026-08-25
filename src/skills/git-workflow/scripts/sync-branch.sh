@@ -2,6 +2,9 @@
 # Create or resume one task branch in the free main checkout, or in its own
 # worktree when the main checkout is busy.
 #
+# A new branch grows from wherever the repository stands: the current branch when
+# it is not the project base branch, otherwise the project base branch.
+#
 # Usage: sync-branch.sh <KEY> <branch-type>
 #
 # Environment:
@@ -85,35 +88,45 @@ git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
 main_repo_root="$(dirname "$git_common_dir")"
 worktree_dir="$(dirname "$main_repo_root")/$(basename "$main_repo_root")-$KEY"
 
-base_branch="${AGENTS_BASE_BRANCH:-develop}"
+current_branch="$(git -C "$main_repo_root" branch --show-current 2>/dev/null || true)"
+
+project_base="${AGENTS_BASE_BRANCH:-develop}"
 local_base=false
 origin_base=false
-has_local_branch "$base_branch" && local_base=true
-has_origin_branch "$base_branch" && origin_base=true
+has_local_branch "$project_base" && local_base=true
+has_origin_branch "$project_base" && origin_base=true
 
 if ! "$local_base" && ! "$origin_base"; then
   if [[ -n "$origin_remote" ]] && is_infrastructure_repository "$origin_remote"; then
-    base_branch="${AGENTS_BASE_BRANCH_FALLBACK:-master}"
-    has_local_branch "$base_branch" && local_base=true
-    has_origin_branch "$base_branch" && origin_base=true
+    project_base="${AGENTS_BASE_BRANCH_FALLBACK:-master}"
+    has_local_branch "$project_base" && local_base=true
+    has_origin_branch "$project_base" && origin_base=true
   fi
 fi
-base_known=false
-{ "$local_base" || "$origin_base"; } && base_known=true
+project_base_known=false
+{ "$local_base" || "$origin_base"; } && project_base_known=true
+
+# Новая ветка растёт из того, где стоит репозиторий. Стоя в доработке чужой
+# task-ветки, продолжают отсюда: база от проектной ветки потеряла бы код, ради
+# которого доработка и заводится. Выбранная база печатается в строке `created:`.
+base_from_checkout=false
+if [[ -n "$current_branch" && "$current_branch" != "$project_base" ]] \
+  && has_local_branch "$current_branch"; then
+  base_from_checkout=true
+fi
 
 # Worktree обязателен, только когда основной checkout занят: он не чист, стоит не
-# на базовой и не на самой task-ветке, или в репозитории уже есть другое дерево.
-# Свободный checkout изоляции не покупает, а её цена реальна: в свежем worktree
-# нет gitignored артефактов, его удаление уносит evidence вне Git, кэш линтера
-# холодный, а имя каталога протекает в логику прогонов.
+# на проектной базовой и не на самой task-ветке, или в репозитории уже есть
+# другое дерево. Свободный checkout изоляции не покупает, а её цена реальна: в
+# свежем worktree нет gitignored артефактов, его удаление уносит evidence вне
+# Git, кэш линтера холодный, а имя каталога протекает в логику прогонов.
 main_checkout_is_free() {
-  local branch="$1" current
+  local branch="$1"
   [[ "${AGENTS_TASK_WORKTREE:-auto}" == "auto" ]] || return 1
-  "$base_known" || return 1
+  "$project_base_known" || return 1
   [[ "$(registered_worktree_count)" -eq 1 ]] || return 1
   [[ -z "$(git -C "$main_repo_root" status --porcelain 2>/dev/null)" ]] || return 1
-  current="$(git -C "$main_repo_root" branch --show-current)"
-  [[ "$current" == "$base_branch" || "$current" == "$branch" ]]
+  [[ "$current_branch" == "$project_base" || "$current_branch" == "$branch" ]]
 }
 
 candidates=()
@@ -185,24 +198,31 @@ if [[ ${#candidates[@]} -eq 1 ]]; then
   exit 0
 fi
 
-if ! "$base_known"; then
-  fail 17 "conflict: base branch '${AGENTS_BASE_BRANCH:-develop}' is absent locally and on origin"
-fi
-
-if "$local_base" && "$origin_base" \
-  && branches_diverged "refs/heads/$base_branch" "refs/remotes/origin/$base_branch"; then
-  fail 13 "conflict: '$base_branch' diverged from origin, resolve it before creating the task branch"
-fi
-
-if "$origin_base" \
-  && { ! "$local_base" || git merge-base --is-ancestor "refs/heads/$base_branch" "refs/remotes/origin/$base_branch"; }; then
-  base_ref="origin/$base_branch"
+if "$base_from_checkout"; then
+  base_branch="$current_branch"
+  base_ref="$current_branch"
 else
-  base_ref="$base_branch"
-fi
+  base_branch="$project_base"
 
-if [[ -n "${AGENTS_LOCAL_ONLY:-}" || -z "$origin_remote" ]]; then
-  echo "warning: base '$base_branch' resolved without origin sync; it may lag behind upstream" >&2
+  if ! "$project_base_known"; then
+    fail 17 "conflict: base branch '${AGENTS_BASE_BRANCH:-develop}' is absent locally and on origin"
+  fi
+
+  if "$local_base" && "$origin_base" \
+    && branches_diverged "refs/heads/$base_branch" "refs/remotes/origin/$base_branch"; then
+    fail 13 "conflict: '$base_branch' diverged from origin, resolve it before creating the task branch"
+  fi
+
+  if "$origin_base" \
+    && { ! "$local_base" || git merge-base --is-ancestor "refs/heads/$base_branch" "refs/remotes/origin/$base_branch"; }; then
+    base_ref="origin/$base_branch"
+  else
+    base_ref="$base_branch"
+  fi
+
+  if [[ -n "${AGENTS_LOCAL_ONLY:-}" || -z "$origin_remote" ]]; then
+    echo "warning: base '$base_branch' resolved without origin sync; it may lag behind upstream" >&2
+  fi
 fi
 
 branch="$TYPE/$KEY"

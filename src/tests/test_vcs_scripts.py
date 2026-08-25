@@ -107,20 +107,24 @@ class SyncBranchTest(unittest.TestCase):
         self.assertEqual("feature/UPL-28", self.git_output(work, "branch", "--show-current"))
         self.assertFalse(self.worktree_path(work, "UPL-28").exists())
 
-    def test_foreign_branch_in_main_checkout_forces_worktree(self) -> None:
+    def test_new_task_inherits_current_branch_as_base(self) -> None:
         remote, _ = self.remote_repository()
         work = self.clone(remote)
-        self.git(work, "switch", "-c", "feature/UPL-29-other")
+        self.git(work, "switch", "-c", "feature/UPL-29")
+        (work / "carried.txt").write_text("carried\n", encoding="utf-8")
+        self.git(work, "add", "carried.txt")
+        self.git(work, "commit", "-m", "UPL-29 work")
 
         result = self.run_script(work, "UPL-30", "feature")
 
         task_worktree = self.worktree_path(work, "UPL-30")
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(
-            f"created: feature/UPL-30 (from develop) at {task_worktree}\n",
+            f"created: feature/UPL-30 (from feature/UPL-29) at {task_worktree}\n",
             result.stdout,
         )
-        self.assertEqual("feature/UPL-29-other", self.git_output(work, "branch", "--show-current"))
+        self.assertEqual("carried", (task_worktree / "carried.txt").read_text().strip())
+        self.assertEqual("feature/UPL-29", self.git_output(work, "branch", "--show-current"))
 
     def test_second_task_in_same_repository_gets_its_own_worktree(self) -> None:
         remote, _ = self.remote_repository()
@@ -131,7 +135,7 @@ class SyncBranchTest(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(
-            f"created: feature/UPL-32 (from develop) at {self.worktree_path(work, 'UPL-32')}\n",
+            f"created: feature/UPL-32 (from feature/UPL-31) at {self.worktree_path(work, 'UPL-32')}\n",
             result.stdout,
         )
         self.assertEqual("feature/UPL-31", self.git_output(work, "branch", "--show-current"))
