@@ -18,7 +18,7 @@ SKILL_PAIRS := protocol $(SKILLS_DIR)/protocol \
 TEST_MODULES := $(patsubst tests/%.py,tests.%,$(wildcard tests/test_*.py))
 TEST_JOBS ?= 6
 
-.PHONY: help install uninstall doctor test lint
+.PHONY: help install uninstall doctor check test lint
 
 .DEFAULT_GOAL := help
 
@@ -54,11 +54,16 @@ doctor: ## проверить станцию: версии, конфиг, MCP и
 	 CURSOR_HOME="$(CURSOR_HOME)" \
 	 bash "$(DOCTOR)" $(SKILL_PAIRS)
 
+check: lint test ## прогнать проверки репозитория: lint и test
+
 test: ## запустить unittest-модули параллельно (TEST_JOBS)
 	@printf '%s\n' $(TEST_MODULES) | xargs -P $(TEST_JOBS) -I{} python3 -m unittest {}
 
-lint: ## проверить синтаксис shell и прогнать ruff
+lint: ## проверить shell (bash -n, shellcheck) и прогнать ruff
 	@find "$(CURDIR)/scripts" "$(CURDIR)/skills" -name '*.sh' -exec bash -n {} +
+	@if command -v shellcheck >/dev/null 2>&1; then \
+		find "$(CURDIR)/scripts" "$(CURDIR)/skills" -name '*.sh' -exec shellcheck -S warning {} +; \
+	else printf 'skip: shellcheck not installed\n'; fi
 	@if command -v ruff >/dev/null 2>&1; then \
 		ruff check "$(CURDIR)/lib" "$(CURDIR)/tests" "$(CURDIR)/skills"; \
 	else printf 'skip: ruff not installed\n'; fi
