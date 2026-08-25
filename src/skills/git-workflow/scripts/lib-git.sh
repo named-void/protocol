@@ -33,10 +33,13 @@ normalize_task_key() {
   fi
 }
 
-# Ключ выделенной работы, у которой своего ключа в трекере нет.
-is_derived_task_key() {
+# Ключ работы, у которой источника в трекере нет: ни сам ключ, ни его база не
+# совпадают с форматом ключа трекера.
+is_key_without_tracker_source() {
+  local key="$1"
   local key_pattern="${AGENTS_KEY_PATTERN:-^[A-Za-z][A-Za-z0-9]*-[0-9]+$}"
-  ! [[ "$1" =~ $key_pattern ]]
+
+  ! [[ "$key" =~ $key_pattern ]] && ! [[ "${key%-*}" =~ $key_pattern ]]
 }
 
 has_local_branch() {

@@ -62,7 +62,7 @@ KEY="$(normalize_task_key "$KEY")" \
 
 # shellcheck disable=SC2206
 branch_types=(${AGENTS_BRANCH_TYPES:-feature bugfix hotfix})
-is_derived_task_key "$KEY" && branch_types+=(protocol)
+is_key_without_tracker_source "$KEY" && branch_types+=(protocol)
 valid_type=false
 for candidate_type in "${branch_types[@]}"; do
   [[ "$TYPE" == "$candidate_type" ]] && valid_type=true && break
