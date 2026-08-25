@@ -778,8 +778,8 @@ def cmd_roots(args: list[str]) -> int:
 
 def cmd_data_root(_args: list[str]) -> int:
     """Корень рантайма носителя одной строкой — резолв для shell-потребителей
-    (`doctor.sh`, `run-executor.sh`): второй копии правила `.data` в скриптах
-    быть не должно."""
+    (`scripts/doctor.sh`): второй копии правила `.data` в скриптах быть не
+    должно."""
     print(data_root())
     return 0
 

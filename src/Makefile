@@ -5,6 +5,7 @@ CURSOR_HOME ?= $(HOME)/.cursor
 SKILLS_DIR := $(CURDIR)/skills
 SKILL_LINKS := $(CURDIR)/scripts/manage-skill-links.sh
 INSTRUCTION_LINK := $(CURDIR)/scripts/manage-instruction-link.sh
+DOCTOR := $(CURDIR)/scripts/doctor.sh
 SKILL_PAIRS := protocol $(SKILLS_DIR)/protocol \
 	checker $(SKILLS_DIR)/checker \
 	text-edit $(SKILLS_DIR)/text-edit \
@@ -17,7 +18,7 @@ SKILL_PAIRS := protocol $(SKILLS_DIR)/protocol \
 TEST_MODULES := $(patsubst tests/%.py,tests.%,$(wildcard tests/test_*.py))
 TEST_JOBS ?= 6
 
-.PHONY: help install uninstall test lint
+.PHONY: help install uninstall doctor test lint
 
 .DEFAULT_GOAL := help
 
@@ -47,6 +48,11 @@ uninstall: ## удалить симлинки инструкций и навык
 	@"$(SKILL_LINKS)" uninstall "$(CLAUDE_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" uninstall "$(KILO_CONFIG_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" uninstall "$(CURSOR_HOME)/skills" $(SKILL_PAIRS)
+
+doctor: ## проверить станцию: версии, конфиг, MCP и симлинки
+	@CODEX_HOME="$(CODEX_HOME)" CLAUDE_HOME="$(CLAUDE_HOME)" KILO_CONFIG_HOME="$(KILO_CONFIG_HOME)" \
+	 CURSOR_HOME="$(CURSOR_HOME)" \
+	 bash "$(DOCTOR)" $(SKILL_PAIRS)
 
 test: ## запустить unittest-модули параллельно (TEST_JOBS)
 	@printf '%s\n' $(TEST_MODULES) | xargs -P $(TEST_JOBS) -I{} python3 -m unittest {}
