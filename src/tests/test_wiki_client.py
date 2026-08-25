@@ -24,6 +24,9 @@ class MCPHandler(BaseHTTPRequestHandler):
     # список списков, по одной порции на запрос.
     get_paths: ClassVar[list[str]] = []
     rest_pages: ClassVar[list[list[dict[str, object]]]] = [[]]
+    # Цепочка предков страницы: тот же REST-канал отдаёт её объектом, а не
+    # списком `results`.
+    rest_ancestors: ClassVar[list[dict[str, object]]] = []
 
     def log_message(self, *_: object) -> None:
         pass
@@ -80,6 +83,9 @@ class MCPHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         index = len(type(self).get_paths)
         type(self).get_paths.append(self.path)
+        if "expand=ancestors" in self.path:
+            self._write_json({"ancestors": type(self).rest_ancestors})
+            return
         pages = type(self).rest_pages
         results = pages[index] if index < len(pages) else []
         self._write_json({"results": results, "size": len(results)})
@@ -97,6 +103,7 @@ class WikiClientTest(unittest.TestCase):
         MCPHandler.tool_result_structured = None
         MCPHandler.get_paths = []
         MCPHandler.rest_pages = [[]]
+        MCPHandler.rest_ancestors = []
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), MCPHandler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
@@ -593,6 +600,48 @@ class WikiClientTest(unittest.TestCase):
         )
         self.assertEqual(1, payload["summary"]["open_count"])
         self.assertEqual("unknown", payload["comments"][0]["resolution"])
+
+    def test_ancestors_report_the_excluded_root_of_a_page(self) -> None:
+        # UPL-938: страницы поддерева черновиков читались как спецификация —
+        # заголовком они от неё не отличаются, признаком служит только цепочка
+        # предков.
+        self.write_config(
+            "\n".join(
+                [
+                    "[docs_wiki]",
+                    'product = "confluence"',
+                    'spec_exclude = ["https://wiki/spaces/IT/pages/19956263/Drafts"]',
+                    "",
+                    "[mcp.confluence]",
+                    f'url = "http://127.0.0.1:{self.server.server_port}/mcp"',
+                    "",
+                    "[mcp.confluence.http_headers]",
+                    f'X-Atlassian-Confluence-Url = "http://127.0.0.1:{self.server.server_port}"',
+                    'X-Atlassian-Confluence-Personal-Token = "pat-secret"',
+                    "",
+                ]
+            )
+        )
+        MCPHandler.rest_ancestors = [
+            {"id": "360501", "title": "Root"},
+            {"id": "19956263", "title": "Drafts"},
+            {"id": "26778615", "title": "Service rules"},
+        ]
+        excluded = self._run("ancestors", "26778620")
+
+        self.assertEqual(excluded.returncode, 0, excluded.stderr)
+        payload = json.loads(excluded.stdout)
+        self.assertEqual("19956263", payload["excluded_by"])
+        self.assertEqual(
+            ["360501", "19956263", "26778615"],
+            [item["id"] for item in payload["ancestors"]],
+        )
+
+        MCPHandler.rest_ancestors = [{"id": "360501", "title": "Root"}]
+        allowed = self._run("ancestors", "360505")
+
+        self.assertEqual(allowed.returncode, 0, allowed.stderr)
+        self.assertIsNone(json.loads(allowed.stdout)["excluded_by"])
 
     def test_call_rejects_foreign_tool_prefix(self) -> None:
         result = self._run("call", "jira_search", "--arguments", "{}")

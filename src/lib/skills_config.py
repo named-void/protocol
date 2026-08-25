@@ -502,6 +502,9 @@ EXPECTED_TYPES: dict[str, list[str]] = {
     ],
     "list": [
         "vcs.branch_types",
+        # Корни, исключённые из spec-discovery целиком (черновики аналитиков):
+        # URL или page id, сравнение идёт по id.
+        "docs_wiki.spec_exclude",
         "vcs_host.hosts",
         "mreviewer.rules",
     ],

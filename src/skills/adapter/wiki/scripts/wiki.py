@@ -18,7 +18,7 @@ from mcp_http import (
     parse_arguments,
     rest_get,
 )
-from skills_config import adapter_is_off, get_value
+from skills_config import adapter_is_off, get_section, get_value
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -143,6 +143,48 @@ def strip_page_body(result: dict) -> dict:
         return _without_body(payload) if isinstance(payload, dict) else None
 
     return _apply_to_payloads(result, transform)
+
+
+def excluded_root_ids() -> set[str]:
+    """Page id корней, исключённых из дискавери (`docs_wiki.spec_exclude`).
+
+    Корни задаются URL или page id, а сравнение идёт по id: одна страница
+    приходит несколькими формами URL (UPL-938).
+    """
+    try:
+        entries = get_section("docs_wiki").get("spec_exclude", [])
+    except KeyError:
+        return set()
+    if isinstance(entries, str) or not isinstance(entries, list):
+        raise MCPError("docs_wiki.spec_exclude must be a list of page urls or ids")
+    return {
+        page_id_from_reference(str(entry).strip())
+        for entry in entries
+        if str(entry).strip()
+    }
+
+
+def fetch_ancestors(page_id: str) -> list[dict[str, str]]:
+    """Цепочка предков страницы сверху вниз по REST.
+
+    Ни один MCP-инструмент предков не отдаёт (`get_page` несёт метаданные
+    только самой страницы), поэтому принадлежность поддереву читается прямым
+    REST-GET — тем же каналом, что статусы комментариев.
+    """
+    raw = rest_get(
+        MCP_SERVER,
+        f"/rest/api/content/{page_id}?expand=ancestors",
+        url_header=REST_URL_HEADER,
+        token_header=REST_TOKEN_HEADER,
+    )
+    ancestors = raw.get("ancestors") if isinstance(raw, dict) else None
+    if not isinstance(ancestors, list):
+        raise MCPError(f"REST page {page_id} payload carries no 'ancestors' array")
+    return [
+        {"id": str(item.get("id", "")), "title": str(item.get("title", ""))}
+        for item in ancestors
+        if isinstance(item, dict)
+    ]
 
 
 def fetch_resolutions(page_id: str) -> dict[str, dict[str, str]]:
@@ -296,6 +338,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="write output to a file instead of stdout",
     )
 
+    ancestors_parser = subparsers.add_parser(
+        "ancestors",
+        help="ancestor chain of a page and the excluded root it falls under",
+    )
+    ancestors_parser.add_argument("reference", help="page id or page URL")
+    ancestors_parser.add_argument(
+        "--output",
+        type=Path,
+        help="write output to a file instead of stdout",
+    )
+
     comments_parser = subparsers.add_parser(
         "comments",
         help="page comments without requesting the tool schema",
@@ -354,6 +407,21 @@ def main(argv: list[str] | None = None) -> int:
             )
             if args.body == "none":
                 result = strip_page_body(result)
+        elif args.command == "ancestors":
+            page_id = page_id_from_reference(args.reference)
+            chain = fetch_ancestors(page_id)
+            excluded = excluded_root_ids()
+            # Сама страница тоже может быть исключённым корнем, поэтому она
+            # проверяется наравне со своими предками.
+            hit = next(
+                (
+                    item["id"]
+                    for item in [*chain, {"id": page_id}]
+                    if item["id"] in excluded
+                ),
+                None,
+            )
+            result = {"page_id": page_id, "ancestors": chain, "excluded_by": hit}
         elif args.command == "comments":
             page_id = page_id_from_reference(args.reference)
             result = execute(
