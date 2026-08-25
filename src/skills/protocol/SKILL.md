@@ -71,7 +71,7 @@ Issue key проверь по `issue_tracker.key_pattern` текущей кар�
 
 ### Рабочее дерево и правила проекта
 
-1. Прочитай `$PROTOCOL_SKILL/references/git-lifecycle.md`, выполни Branch-Sync и продолжай только в полученном `WORK_ROOT`.
+1. Прочитай `$PROTOCOL_SKILL/references/git-lifecycle.md`, выполни Branch-Sync и продолжай только в полученном `WORK_ROOT`. Репозиторий, добавленный в scope позже, проходит Branch-Sync тогда же — по правилам того же файла.
 2. Разреши проект и применимые профили:
 
    ```bash
