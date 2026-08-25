@@ -33,6 +33,24 @@ normalize_task_key() {
   fi
 }
 
+# Каталог task worktree создаётся под одну задачу и назван `<repo>-<KEY>`,
+# поэтому его имя называет задачу однозначно — в отличие от имени ветки, на
+# которой репозиторий может стоять по любому поводу. Печатает ключ; вне task
+# worktree возвращает ненулевой код.
+task_key_from_worktree() {
+  local common top main top_name main_name
+
+  common="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || return 1
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || return 1
+  main="${common%/*}"
+  [[ "$top" != "$main" ]] || return 1
+
+  top_name="${top##*/}"
+  main_name="${main##*/}"
+  [[ "$top_name" == "$main_name-"* ]] || return 1
+  printf '%s\n' "${top_name#"$main_name"-}"
+}
+
 # Ключ работы, у которой источника в трекере нет: ни сам ключ, ни его база не
 # совпадают с форматом ключа трекера.
 is_key_without_tracker_source() {
