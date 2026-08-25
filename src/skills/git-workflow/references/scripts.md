@@ -2,7 +2,7 @@
 
 `sync-branch.sh` требует bash >= 3.2 и git >= 2.31; не запускай его через `sh`.
 
-Формат ключа и набор типов ветки скрипт берёт из `AGENTS_KEY_PATTERN` и `AGENTS_BRANCH_TYPES`. Без них действуют `^[A-Za-z][A-Za-z0-9]*-[0-9]+$` и `feature bugfix hotfix`. Для `common-N` дополнительно разрешён тип `protocol`.
+Формат ключа и набор типов ветки скрипт берёт из `AGENTS_KEY_PATTERN`, `AGENTS_DERIVED_KEY_PATTERN` и `AGENTS_BRANCH_TYPES`. Без них действуют `^[A-Za-z][A-Za-z0-9]*-[0-9]+$`, `^[A-Za-z][A-Za-z0-9]*(-[A-Za-z0-9]+)+-[0-9]+$` и `feature bugfix hotfix`. Ключу, не совпавшему с форматом трекера, дополнительно разрешён тип `protocol`.
 
 `AGENTS_LOCAL_ONLY=1` разрешает работу без `origin` и пропускает fetch. Используй его только для намеренно локального проекта.
 

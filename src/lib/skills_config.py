@@ -16,7 +16,7 @@ CLI::
     python3 skills_config.py project [--path <dir>]
     python3 skills_config.py projects-root
     python3 skills_config.py data-root
-    python3 skills_config.py allocate-common-task
+    python3 skills_config.py allocate-task-key <base> [--path <dir>]
     python3 skills_config.py roots [--project <name>]
 
 ``project`` prints the identified project and the channel that identified it.
@@ -39,7 +39,6 @@ config diverges from behaviour.
 
 from __future__ import annotations
 
-import fcntl
 import functools
 import json
 import os
@@ -53,7 +52,9 @@ from typing import Any
 import tomllib
 
 COMMON_PROJECT = "_common"
-COMMON_TASK_PATTERN = re.compile(r"^common-(\d+)$")
+# Ключ выделенной работы: ключ источника плюс индекс. Индекс продолжает
+# максимальный уже видимый — в каталогах задач, ветках, worktree и истории.
+DERIVED_INDEX_TEMPLATE = r"(?:^|[-/])%s-(\d+)$"
 
 
 @functools.cache
@@ -136,37 +137,55 @@ def projects_root() -> Path:
     return runtime_carrier_root() / "projects"
 
 
-def allocate_common_task_id() -> str:
-    """Атомарно выделить следующий глобальный идентификатор ``common-N``."""
-    common_data = projects_root() / COMMON_PROJECT / ".data"
-    common_data.mkdir(parents=True, exist_ok=True)
-    index_path = common_data / "common-task-index"
-    lock_path = common_data / "common-task-index.lock"
+def _git_lines(repository: Path, *arguments: str) -> list[str]:
+    """Вывод git-команды построчно; недоступный репозиторий даёт пустой список."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(repository), *arguments],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return []
+    return [line for line in completed.stdout.splitlines() if line]
 
-    with lock_path.open("a+", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        current = 0
-        if index_path.is_file():
-            raw = index_path.read_text(encoding="utf-8").strip()
-            try:
-                current = int(raw)
-            except ValueError as error:
-                raise ConfigError(f"{index_path}: expected integer, got {raw!r}") from error
 
-        observed = 0
-        for tasks_dir in projects_root().glob("*/.data/tasks"):
-            if not tasks_dir.is_dir():
-                continue
-            for entry in tasks_dir.iterdir():
-                match = COMMON_TASK_PATTERN.fullmatch(entry.name)
-                if match:
-                    observed = max(observed, int(match.group(1)))
+def observed_task_keys(repository: Path) -> list[str]:
+    """Всё, где уже мог остаться след ключа задачи: каталоги задач, ветки,
+    worktree и заголовки коммитов. Индекс выделенной работы продолжает максимум
+    именно по этому наблюдаемому состоянию, а не по отдельному счётчику."""
+    observed: list[str] = []
+    for tasks_dir in projects_root().glob("*/.data/tasks"):
+        if tasks_dir.is_dir():
+            observed.extend(entry.name for entry in tasks_dir.iterdir())
+    observed.extend(
+        _git_lines(repository, "for-each-ref", "--format=%(refname:short)", "refs/heads", "refs/remotes")
+    )
+    observed.extend(
+        line[len("worktree ") :]
+        for line in _git_lines(repository, "worktree", "list", "--porcelain")
+        if line.startswith("worktree ")
+    )
+    observed.extend(_git_lines(repository, "log", "--all", "--format=%s", "-n", "5000"))
+    return observed
 
-        next_index = max(current, observed) + 1
-        temporary = index_path.with_name(f".{index_path.name}.{os.getpid()}.tmp")
-        temporary.write_text(f"{next_index}\n", encoding="utf-8")
-        os.replace(temporary, index_path)
-        return f"common-{next_index}"
+
+def allocate_task_key(base: str, path: str | os.PathLike[str] | None = None) -> str:
+    """Выделить ключ `<base>-<N>` для работы, у которой своего ключа нет."""
+    base = base.strip()
+    if not base or not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*", base):
+        raise ConfigError(f"invalid task key base {base!r}")
+
+    repository = Path(path).expanduser() if path else Path.cwd()
+    pattern = re.compile(DERIVED_INDEX_TEMPLATE % re.escape(base))
+    highest = 0
+    for candidate in observed_task_keys(repository):
+        for token in candidate.split():
+            match = pattern.search(token)
+            if match:
+                highest = max(highest, int(match.group(1)))
+    return f"{base}-{highest + 1}"
 
 
 def secrets_path() -> Path:
@@ -790,10 +809,28 @@ def cmd_projects_root(_args: list[str]) -> int:
     return 0
 
 
-def cmd_allocate_common_task(_args: list[str]) -> int:
-    """Выделить глобальный common-id и вывести его одной строкой."""
+def cmd_allocate_task_key(args: list[str]) -> int:
+    """Выделить ключ выделенной работы и вывести его одной строкой."""
+    base = ""
+    path: str | None = None
+    rest = list(args)
+    while rest:
+        item = rest.pop(0)
+        if item == "--path":
+            if not rest:
+                print("error: --path requires a value", file=sys.stderr)
+                return 2
+            path = rest.pop(0)
+        elif not base:
+            base = item
+        else:
+            print(f"error: unexpected argument {item!r}", file=sys.stderr)
+            return 2
+    if not base:
+        print("error: task key base is required", file=sys.stderr)
+        return 2
     try:
-        print(allocate_common_task_id())
+        print(allocate_task_key(base, path))
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -926,15 +963,15 @@ def main(argv: list[str]) -> int:
         return cmd_data_root(args[1:])
     if args and args[0] == "projects-root":
         return cmd_projects_root(args[1:])
-    if args and args[0] == "allocate-common-task":
-        return cmd_allocate_common_task(args[1:])
+    if args and args[0] == "allocate-task-key":
+        return cmd_allocate_task_key(args[1:])
     if args and args[0] == "roots":
         return cmd_roots(args[1:])
     print(
         "usage: skills_config.py get <dotted.key> [--default X] [--json]"
         " | validate | export-env"
         " | project [--path <dir>] | profiles [--path <dir>]"
-        " | projects-root | data-root | allocate-common-task"
+        " | projects-root | data-root | allocate-task-key <base> [--path <dir>]"
         " | roots [--project <name>]",
         file=sys.stderr,
     )

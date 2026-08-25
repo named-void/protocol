@@ -12,17 +12,31 @@ fail() {
   exit "$code"
 }
 
+# Ключ трекера нормализуется в верхний регистр. Ключ выделенной работы — база
+# плюс индекс (`UPL-940-6`, `ord-service-1`): регистр наследуется от базы, чтобы
+# ключ трекера остался узнаваемым, а производный от каталога не искажался.
 normalize_task_key() {
   local key="$1"
   local key_pattern="${AGENTS_KEY_PATTERN:-^[A-Za-z][A-Za-z0-9]*-[0-9]+$}"
+  local derived_pattern="${AGENTS_DERIVED_KEY_PATTERN:-^[A-Za-z][A-Za-z0-9]*(-[A-Za-z0-9]+)+-[0-9]+$}"
 
-  if [[ "$key" =~ ^common-[0-9]+$ ]]; then
-    printf '%s\n' "$key"
-  elif [[ "$key" =~ $key_pattern ]]; then
+  if [[ "$key" =~ $key_pattern ]]; then
     tr '[:lower:]' '[:upper:]' <<<"$key"
+  elif [[ "$key" =~ $derived_pattern ]]; then
+    if [[ "${key%-*}" =~ $key_pattern ]]; then
+      tr '[:lower:]' '[:upper:]' <<<"$key"
+    else
+      printf '%s\n' "$key"
+    fi
   else
     return 1
   fi
+}
+
+# Ключ выделенной работы, у которой своего ключа в трекере нет.
+is_derived_task_key() {
+  local key_pattern="${AGENTS_KEY_PATTERN:-^[A-Za-z][A-Za-z0-9]*-[0-9]+$}"
+  ! [[ "$1" =~ $key_pattern ]]
 }
 
 has_local_branch() {
@@ -55,11 +69,6 @@ branches_diverged() {
 
   ! git merge-base --is-ancestor "$local_ref" "$remote_ref" \
     && ! git merge-base --is-ancestor "$remote_ref" "$local_ref"
-}
-
-# Prints how many worktrees the repository has registered, main one included.
-registered_worktree_count() {
-  git worktree list --porcelain | awk '/^worktree /{ count++ } END { print count + 0 }'
 }
 
 # Prints the worktree path currently holding the given local branch ref, if

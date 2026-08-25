@@ -67,6 +67,9 @@ class ProjectLayerTest(unittest.TestCase):
             check=False,
         )
 
+    def git(self, cwd: Path, *arguments: str) -> None:
+        subprocess.run(["git", *arguments], cwd=cwd, check=True, capture_output=True, text=True)
+
     def acme(self) -> None:
         self.write_project(
             "acme",
@@ -268,23 +271,32 @@ class ProjectLayerTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(str(self.projects), result.stdout.strip())
 
-    def test_common_task_ids_are_global_and_monotonic(self) -> None:
-        existing = self.projects / "acme" / ".data" / "tasks" / "common-7"
-        existing.mkdir(parents=True)
+    def test_derived_task_key_continues_the_highest_visible_index(self) -> None:
+        (self.projects / "acme" / ".data" / "tasks" / "UPL-940-5").mkdir(parents=True)
+        repository = self.root / "repo"
+        repository.mkdir()
+        self.git(repository, "init", "-b", "develop", ".")
+        self.git(repository, "config", "user.email", "protocol@example.test")
+        self.git(repository, "config", "user.name", "Protocol Test")
+        self.git(repository, "commit", "--allow-empty", "-m", "UPL-940-3 сделано")
+        self.git(repository, "branch", "feature/UPL-940-2")
 
-        first = self.run_cli("allocate-common-task")
-        second = self.run_cli("allocate-common-task")
+        result = self.run_cli("allocate-task-key", "UPL-940", "--path", str(repository))
 
-        self.assertEqual(0, first.returncode, first.stderr)
-        self.assertEqual("common-8", first.stdout.strip())
-        self.assertEqual(0, second.returncode, second.stderr)
-        self.assertEqual("common-9", second.stdout.strip())
-        self.assertEqual(
-            "9",
-            (self.projects / "_common" / ".data" / "common-task-index")
-            .read_text(encoding="utf-8")
-            .strip(),
-        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("UPL-940-6", result.stdout.strip())
+
+    def test_derived_task_key_starts_at_one_without_visible_traces(self) -> None:
+        result = self.run_cli("allocate-task-key", "ord-service", "--path", str(self.root))
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("ord-service-1", result.stdout.strip())
+
+    def test_derived_task_key_rejects_an_unusable_base(self) -> None:
+        result = self.run_cli("allocate-task-key", "9 bad", "--path", str(self.root))
+
+        self.assertEqual(1, result.returncode)
+        self.assertIn("invalid task key base", result.stderr)
 
     def test_data_root_uses_common_runtime_store_outside_a_known_project(self) -> None:
         result = self.run_cli("data-root", cwd=self.root)
