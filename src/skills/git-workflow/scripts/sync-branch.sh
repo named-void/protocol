@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Create or resume one task branch in its own worktree.
+# Create or resume one task branch in the free main checkout, or in its own
+# worktree when the main checkout is busy.
 #
 # Usage: sync-branch.sh <KEY> <branch-type>
+#
+# Environment:
+#   AGENTS_TASK_WORKTREE=always  force the isolated worktree (default: auto)
 #
 # Exit codes:
 #   0  success; stdout is created:/switched:/current: <branch> ... at <path>
@@ -81,6 +85,37 @@ git_common_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
 main_repo_root="$(dirname "$git_common_dir")"
 worktree_dir="$(dirname "$main_repo_root")/$(basename "$main_repo_root")-$KEY"
 
+base_branch="${AGENTS_BASE_BRANCH:-develop}"
+local_base=false
+origin_base=false
+has_local_branch "$base_branch" && local_base=true
+has_origin_branch "$base_branch" && origin_base=true
+
+if ! "$local_base" && ! "$origin_base"; then
+  if [[ -n "$origin_remote" ]] && is_infrastructure_repository "$origin_remote"; then
+    base_branch="${AGENTS_BASE_BRANCH_FALLBACK:-master}"
+    has_local_branch "$base_branch" && local_base=true
+    has_origin_branch "$base_branch" && origin_base=true
+  fi
+fi
+base_known=false
+{ "$local_base" || "$origin_base"; } && base_known=true
+
+# Worktree обязателен, только когда основной checkout занят: он не чист, стоит не
+# на базовой и не на самой task-ветке, или в репозитории уже есть другое дерево.
+# Свободный checkout изоляции не покупает, а её цена реальна: в свежем worktree
+# нет gitignored артефактов, его удаление уносит evidence вне Git, кэш линтера
+# холодный, а имя каталога протекает в логику прогонов.
+main_checkout_is_free() {
+  local branch="$1" current
+  [[ "${AGENTS_TASK_WORKTREE:-auto}" == "auto" ]] || return 1
+  "$base_known" || return 1
+  [[ "$(registered_worktree_count)" -eq 1 ]] || return 1
+  [[ -z "$(git -C "$main_repo_root" status --porcelain 2>/dev/null)" ]] || return 1
+  current="$(git -C "$main_repo_root" branch --show-current)"
+  [[ "$current" == "$base_branch" || "$current" == "$branch" ]]
+}
+
 candidates=()
 for candidate_type in "${branch_types[@]}"; do
   candidate="$candidate_type/$KEY"
@@ -125,9 +160,6 @@ if [[ ${#candidates[@]} -eq 1 ]]; then
     exit 0
   fi
 
-  [[ ! -e "$worktree_dir" ]] \
-    || fail 22 "conflict: path '$worktree_dir' exists but is not the worktree for '$branch'"
-
   if "$local_exists" && "$origin_exists" \
     && git merge-base --is-ancestor "refs/heads/$branch" "refs/remotes/origin/$branch"; then
     git branch -f "$branch" "origin/$branch" >/dev/null 2>&1 \
@@ -137,29 +169,23 @@ if [[ ${#candidates[@]} -eq 1 ]]; then
       || fail 18 "error: cannot create '$branch' from origin"
   fi
 
+  if main_checkout_is_free "$branch"; then
+    git -C "$main_repo_root" switch --quiet "$branch" \
+      || fail 18 "error: cannot switch main checkout to '$branch'"
+    echo "switched: $branch at $main_repo_root"
+    exit 0
+  fi
+
+  [[ ! -e "$worktree_dir" ]] \
+    || fail 22 "conflict: path '$worktree_dir' exists but is not the worktree for '$branch'"
+
   git worktree add --quiet "$worktree_dir" "$branch" \
     || fail 23 "error: cannot create worktree '$worktree_dir' for '$branch'"
   echo "switched: $branch at $worktree_dir"
   exit 0
 fi
 
-[[ ! -e "$worktree_dir" ]] \
-  || fail 22 "conflict: path '$worktree_dir' exists but is not a registered task worktree"
-
-base_branch="${AGENTS_BASE_BRANCH:-develop}"
-local_base=false
-origin_base=false
-has_local_branch "$base_branch" && local_base=true
-has_origin_branch "$base_branch" && origin_base=true
-
-if ! "$local_base" && ! "$origin_base"; then
-  if [[ -n "$origin_remote" ]] && is_infrastructure_repository "$origin_remote"; then
-    base_branch="${AGENTS_BASE_BRANCH_FALLBACK:-master}"
-    has_local_branch "$base_branch" && local_base=true
-    has_origin_branch "$base_branch" && origin_base=true
-  fi
-fi
-if ! "$local_base" && ! "$origin_base"; then
+if ! "$base_known"; then
   fail 17 "conflict: base branch '${AGENTS_BASE_BRANCH:-develop}' is absent locally and on origin"
 fi
 
@@ -180,6 +206,17 @@ if [[ -n "${AGENTS_LOCAL_ONLY:-}" || -z "$origin_remote" ]]; then
 fi
 
 branch="$TYPE/$KEY"
+
+if main_checkout_is_free "$branch"; then
+  git -C "$main_repo_root" switch --quiet --no-track -c "$branch" "$base_ref" \
+    || fail 18 "error: cannot create '$branch' in main checkout '$main_repo_root'"
+  echo "created: $branch (from $base_branch) at $main_repo_root"
+  exit 0
+fi
+
+[[ ! -e "$worktree_dir" ]] \
+  || fail 22 "conflict: path '$worktree_dir' exists but is not a registered task worktree"
+
 git worktree add --quiet --no-track -b "$branch" "$worktree_dir" "$base_ref" \
   || fail 23 "error: cannot create worktree '$worktree_dir' for '$branch'"
 echo "created: $branch (from $base_branch) at $worktree_dir"

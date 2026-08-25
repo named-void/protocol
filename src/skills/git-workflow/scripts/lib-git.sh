@@ -57,6 +57,11 @@ branches_diverged() {
     && ! git merge-base --is-ancestor "$remote_ref" "$local_ref"
 }
 
+# Prints how many worktrees the repository has registered, main one included.
+registered_worktree_count() {
+  git worktree list --porcelain | awk '/^worktree /{ count++ } END { print count + 0 }'
+}
+
 # Prints the worktree path currently holding the given local branch ref, if
 # any registered worktree has it checked out.
 worktree_holding_branch() {

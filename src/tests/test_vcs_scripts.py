@@ -79,7 +79,7 @@ class SyncBranchTest(unittest.TestCase):
             capture_output=True,
         )
 
-    def test_creates_task_branch_in_isolated_worktree(self) -> None:
+    def test_dirty_main_checkout_isolates_task_branch_in_worktree(self) -> None:
         remote, _ = self.remote_repository()
         work = self.clone(remote)
         (work / "local-note.txt").write_text("keep\n", encoding="utf-8")
@@ -93,7 +93,66 @@ class SyncBranchTest(unittest.TestCase):
             result.stdout,
         )
         self.assertEqual("feature/UPL-20", self.git_output(task_worktree, "branch", "--show-current"))
+        self.assertEqual("develop", self.git_output(work, "branch", "--show-current"))
         self.assertTrue((work / "local-note.txt").is_file())
+
+    def test_free_main_checkout_hosts_task_branch_without_worktree(self) -> None:
+        remote, _ = self.remote_repository()
+        work = self.clone(remote)
+
+        result = self.run_script(work, "UPL-28", "feature")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(f"created: feature/UPL-28 (from develop) at {work.resolve()}\n", result.stdout)
+        self.assertEqual("feature/UPL-28", self.git_output(work, "branch", "--show-current"))
+        self.assertFalse(self.worktree_path(work, "UPL-28").exists())
+
+    def test_foreign_branch_in_main_checkout_forces_worktree(self) -> None:
+        remote, _ = self.remote_repository()
+        work = self.clone(remote)
+        self.git(work, "switch", "-c", "feature/UPL-29-other")
+
+        result = self.run_script(work, "UPL-30", "feature")
+
+        task_worktree = self.worktree_path(work, "UPL-30")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            f"created: feature/UPL-30 (from develop) at {task_worktree}\n",
+            result.stdout,
+        )
+        self.assertEqual("feature/UPL-29-other", self.git_output(work, "branch", "--show-current"))
+
+    def test_second_task_in_same_repository_gets_its_own_worktree(self) -> None:
+        remote, _ = self.remote_repository()
+        work = self.clone(remote)
+        self.assertEqual(0, self.run_script(work, "UPL-31", "feature").returncode)
+
+        result = self.run_script(work, "UPL-32", "feature")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            f"created: feature/UPL-32 (from develop) at {self.worktree_path(work, 'UPL-32')}\n",
+            result.stdout,
+        )
+        self.assertEqual("feature/UPL-31", self.git_output(work, "branch", "--show-current"))
+
+    def test_isolation_is_forced_by_environment(self) -> None:
+        remote, _ = self.remote_repository()
+        work = self.clone(remote)
+
+        result = self.run_script(
+            work,
+            "UPL-33",
+            "feature",
+            env={**os.environ, "AGENTS_TASK_WORKTREE": "always"},
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(
+            f"created: feature/UPL-33 (from develop) at {self.worktree_path(work, 'UPL-33')}\n",
+            result.stdout,
+        )
+        self.assertEqual("develop", self.git_output(work, "branch", "--show-current"))
 
     def test_checks_out_existing_remote_task_branch(self) -> None:
         remote, seed = self.remote_repository()
@@ -106,17 +165,15 @@ class SyncBranchTest(unittest.TestCase):
 
         result = self.run_script(work, "UPL-21", "bugfix")
 
-        task_worktree = self.worktree_path(work, "UPL-21")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(f"switched: bugfix/UPL-21 at {task_worktree}\n", result.stdout)
-        self.assertEqual("remote", (task_worktree / "remote.txt").read_text().strip())
+        self.assertEqual(f"switched: bugfix/UPL-21 at {work.resolve()}\n", result.stdout)
+        self.assertEqual("remote", (work / "remote.txt").read_text().strip())
 
-    def test_resume_fast_forwards_clean_task_worktree(self) -> None:
+    def test_resume_fast_forwards_clean_task_tree(self) -> None:
         remote, seed = self.remote_repository()
         work = self.clone(remote)
         self.assertEqual(0, self.run_script(work, "UPL-22", "feature").returncode)
-        task_worktree = self.worktree_path(work, "UPL-22")
-        self.git(task_worktree, "push", "-u", "origin", "feature/UPL-22")
+        self.git(work, "push", "-u", "origin", "feature/UPL-22")
         self.git(seed, "fetch", "origin")
         self.git(seed, "switch", "-c", "feature/UPL-22", "origin/feature/UPL-22")
         self.git(seed, "commit", "--allow-empty", "-m", "remote progress")
@@ -125,17 +182,17 @@ class SyncBranchTest(unittest.TestCase):
         result = self.run_script(work, "UPL-22", "feature")
 
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(f"current: feature/UPL-22 at {task_worktree}\n", result.stdout)
+        self.assertEqual(f"current: feature/UPL-22 at {work.resolve()}\n", result.stdout)
         self.assertEqual(
             self.git_output(work, "rev-parse", "origin/feature/UPL-22"),
-            self.git_output(task_worktree, "rev-parse", "HEAD"),
+            self.git_output(work, "rev-parse", "HEAD"),
         )
 
-    def test_dirty_task_worktree_blocks_resume(self) -> None:
+    def test_dirty_task_tree_blocks_resume(self) -> None:
         remote, _ = self.remote_repository()
         work = self.clone(remote)
         self.assertEqual(0, self.run_script(work, "UPL-23", "feature").returncode)
-        (self.worktree_path(work, "UPL-23") / "pending.txt").write_text("pending\n")
+        (work / "pending.txt").write_text("pending\n")
 
         result = self.run_script(work, "UPL-23", "feature")
 
@@ -146,9 +203,8 @@ class SyncBranchTest(unittest.TestCase):
         remote, seed = self.remote_repository()
         work = self.clone(remote)
         self.assertEqual(0, self.run_script(work, "UPL-24", "feature").returncode)
-        task_worktree = self.worktree_path(work, "UPL-24")
-        self.git(task_worktree, "push", "-u", "origin", "feature/UPL-24")
-        self.git(task_worktree, "commit", "--allow-empty", "-m", "local progress")
+        self.git(work, "push", "-u", "origin", "feature/UPL-24")
+        self.git(work, "commit", "--allow-empty", "-m", "local progress")
         self.git(seed, "fetch", "origin")
         self.git(seed, "switch", "-c", "feature/UPL-24", "origin/feature/UPL-24")
         self.git(seed, "commit", "--allow-empty", "-m", "remote progress")
