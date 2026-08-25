@@ -17,9 +17,18 @@ SKILL_PAIRS := protocol $(SKILLS_DIR)/protocol \
 TEST_MODULES := $(patsubst tests/%.py,tests.%,$(wildcard tests/test_*.py))
 TEST_JOBS ?= 6
 
-.PHONY: install uninstall test lint
+.PHONY: help install uninstall test lint
 
-install:
+.DEFAULT_GOAL := help
+
+help: ## показать список целей
+	@printf 'Доступные цели:\n'
+	@grep -hE '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
+		| sed -e 's/:.*## /\t/' \
+		| sort \
+		| awk -F'\t' '{ printf "  %-12s %s\n", $$1, $$2 }'
+
+install: ## установить симлинки инструкций и навыков
 	@"$(INSTRUCTION_LINK)" install "$(CODEX_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
 	@"$(INSTRUCTION_LINK)" install "$(CLAUDE_HOME)/CLAUDE.md" "$(CURDIR)/AGENTS.md"
 	@"$(INSTRUCTION_LINK)" install "$(KILO_CONFIG_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
@@ -29,7 +38,7 @@ install:
 	@"$(SKILL_LINKS)" install "$(KILO_CONFIG_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" install "$(CURSOR_HOME)/skills" $(SKILL_PAIRS)
 
-uninstall:
+uninstall: ## удалить симлинки инструкций и навыков
 	@"$(INSTRUCTION_LINK)" uninstall "$(CODEX_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
 	@"$(INSTRUCTION_LINK)" uninstall "$(CLAUDE_HOME)/CLAUDE.md" "$(CURDIR)/AGENTS.md"
 	@"$(INSTRUCTION_LINK)" uninstall "$(KILO_CONFIG_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
@@ -39,10 +48,10 @@ uninstall:
 	@"$(SKILL_LINKS)" uninstall "$(KILO_CONFIG_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" uninstall "$(CURSOR_HOME)/skills" $(SKILL_PAIRS)
 
-test:
+test: ## запустить unittest-модули параллельно (TEST_JOBS)
 	@printf '%s\n' $(TEST_MODULES) | xargs -P $(TEST_JOBS) -I{} python3 -m unittest {}
 
-lint:
+lint: ## проверить синтаксис shell и прогнать ruff
 	@find "$(CURDIR)/scripts" "$(CURDIR)/skills" -name '*.sh' -exec bash -n {} +
 	@if command -v ruff >/dev/null 2>&1; then \
 		ruff check "$(CURDIR)/lib" "$(CURDIR)/tests" "$(CURDIR)/skills"; \
