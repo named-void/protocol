@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import tempfile
@@ -8,9 +9,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 SCRIPT = ROOT / "skills" / "git-workflow" / "scripts" / "sync-branch.sh"
+REMOVE_SCRIPT = ROOT / "skills" / "git-workflow" / "scripts" / "remove-task-worktree.sh"
 
 
-class SyncBranchTest(unittest.TestCase):
+class GitScriptTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary_directory = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary_directory.name)
@@ -79,6 +81,8 @@ class SyncBranchTest(unittest.TestCase):
             capture_output=True,
         )
 
+
+class SyncBranchTest(GitScriptTest):
     def task_key_from(self, cwd: Path) -> subprocess.CompletedProcess[str]:
         library = SCRIPT.parent / "lib-git.sh"
         return subprocess.run(
@@ -313,6 +317,141 @@ class SyncBranchTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("created: feature/UPL-27 (from master)", result.stdout)
 
+
+class RemoveTaskWorktreeTest(GitScriptTest):
+    """Дерево уносит evidence вне Git: удаление без подтверждённой копии
+    оставляет зафиксированные SHA-256 без предмета сверки."""
+
+    def local_repository(self) -> Path:
+        repository = self.root / "work"
+        self.git(self.root, "init", "-b", "develop", str(repository))
+        self.configure_user(repository)
+        (repository / ".gitignore").write_text("evidence/\n", encoding="utf-8")
+        self.git(repository, "add", ".gitignore")
+        self.git(repository, "commit", "-m", "initial")
+        return repository
+
+    def task_worktree(self, repository: Path, key: str) -> Path:
+        result = self.run_script(
+            repository,
+            key,
+            "feature",
+            env={**os.environ, "AGENTS_LOCAL_ONLY": "1"},
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        return self.worktree_path(repository, key)
+
+    def evidence(self, worktree: Path, name: str = "swagger.json") -> tuple[str, str]:
+        relative = f"evidence/{name}"
+        path = worktree / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("generated\n", encoding="utf-8")
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        return relative, digest
+
+    def archive(self) -> Path:
+        directory = self.root / "implementation-1"
+        directory.mkdir(parents=True, exist_ok=True)
+        return directory
+
+    def remove(self, repository: Path, key: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(REMOVE_SCRIPT), "remove", key, *arguments],
+            cwd=repository,
+            env=os.environ.copy(),
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+    def test_archives_evidence_before_removing_the_worktree(self) -> None:
+        repository = self.local_repository()
+        worktree = self.task_worktree(repository, "UPL-40")
+        relative, digest = self.evidence(worktree)
+        archive = self.archive()
+
+        result = self.remove(repository, "UPL-40", str(archive), f"{digest}:{relative}")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(worktree.exists())
+        self.assertEqual("generated\n", (archive / relative).read_text(encoding="utf-8"))
+        self.assertIn("feature/UPL-40", self.git_output(repository, "branch", "--list"))
+
+    def test_unverified_evidence_keeps_the_worktree(self) -> None:
+        repository = self.local_repository()
+        worktree = self.task_worktree(repository, "UPL-41")
+        relative, _ = self.evidence(worktree)
+        archive = self.archive()
+
+        result = self.remove(repository, "UPL-41", str(archive), f"{'0' * 64}:{relative}")
+
+        self.assertEqual(31, result.returncode)
+        self.assertTrue(worktree.exists())
+        self.assertFalse((archive / relative).exists())
+
+    def test_missing_evidence_keeps_the_worktree(self) -> None:
+        repository = self.local_repository()
+        worktree = self.task_worktree(repository, "UPL-42")
+        archive = self.archive()
+
+        result = self.remove(repository, "UPL-42", str(archive), f"{'0' * 64}:evidence/absent.json")
+
+        self.assertEqual(30, result.returncode)
+        self.assertTrue(worktree.exists())
+
+    def test_uncommitted_changes_keep_the_worktree(self) -> None:
+        repository = self.local_repository()
+        worktree = self.task_worktree(repository, "UPL-43")
+        (worktree / "pending.txt").write_text("pending\n", encoding="utf-8")
+
+        result = self.remove(repository, "UPL-43", str(self.archive()))
+
+        self.assertEqual(10, result.returncode)
+        self.assertTrue(worktree.exists())
+
+    def test_stash_entry_keeps_the_worktree(self) -> None:
+        repository = self.local_repository()
+        worktree = self.task_worktree(repository, "UPL-44")
+        (worktree / "pending.txt").write_text("pending\n", encoding="utf-8")
+        self.git(worktree, "add", "pending.txt")
+        self.git(worktree, "stash")
+
+        result = self.remove(repository, "UPL-44", str(self.archive()))
+
+        self.assertEqual(11, result.returncode)
+        self.assertTrue(worktree.exists())
+
+    def test_detached_head_keeps_the_worktree(self) -> None:
+        repository = self.local_repository()
+        worktree = self.task_worktree(repository, "UPL-47")
+        self.git(worktree, "checkout", "--detach")
+        self.git(worktree, "commit", "--allow-empty", "-m", "work outside a branch")
+
+        result = self.remove(repository, "UPL-47", str(self.archive()))
+
+        self.assertEqual(26, result.returncode)
+        self.assertTrue(worktree.exists())
+
+    def test_list_reports_state_and_merge_state(self) -> None:
+        repository = self.local_repository()
+        merged = self.task_worktree(repository, "UPL-45")
+        unmerged = self.task_worktree(repository, "UPL-46")
+        (unmerged / "tracked.txt").write_text("work\n", encoding="utf-8")
+        self.git(unmerged, "add", "tracked.txt")
+        self.git(unmerged, "commit", "-m", "UPL-46 work")
+
+        result = subprocess.run(
+            [str(REMOVE_SCRIPT), "list"],
+            cwd=repository,
+            env=os.environ.copy(),
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn(f"UPL-45 clean merged {merged}", result.stdout)
+        self.assertIn(f"UPL-46 clean unmerged {unmerged}", result.stdout)
 
 if __name__ == "__main__":
     unittest.main()
