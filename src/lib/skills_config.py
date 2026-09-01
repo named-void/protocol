@@ -506,11 +506,9 @@ EXPECTED_TYPES: dict[str, list[str]] = {
         # URL или page id, сравнение идёт по id.
         "docs_wiki.spec_exclude",
         "vcs_host.hosts",
-        "mreviewer.rules",
     ],
     "table": [
         "dispatch.key_prefix_map",
-        "mreviewer",
         # Доступ к MCP-серверам (orchestration/adr/README.md#mcp-credentials):
         # секция на сервер, имя — продукт адаптера, поэтому типизируется
         # корень, а не отдельные секции.
@@ -882,34 +880,6 @@ def profiles_for_path(path: str | os.PathLike[str] | None = None) -> list[Path]:
                 continue
             seen.add(resolved)
             result.append(Path(resolved))
-    return result
-
-
-def mreviewer_rules(project_name: str) -> list[Path]:
-    """Return review-only rules configured for one project carrier."""
-    layer = load_carrier_config(project_name)
-    section = layer.get("mreviewer") or {}
-    if not isinstance(section, dict):
-        raise ConfigError(f"{project_config_path(project_name)}: mreviewer must be a table")
-    entries = section.get("rules", [])
-    if isinstance(entries, str) or not isinstance(entries, list):
-        raise ConfigError(
-            f"{project_config_path(project_name)}: mreviewer.rules must be a list"
-        )
-    project_dir = projects_root() / project_name
-    repo_root = Path(__file__).resolve().parents[1]
-    seen: set[str] = set()
-    result: list[Path] = []
-    for entry in entries:
-        raw = str(entry).strip()
-        if not raw:
-            continue
-        base = project_dir if raw.startswith("./") else repo_root
-        resolved = str((base / raw).resolve())
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        result.append(Path(resolved))
     return result
 
 

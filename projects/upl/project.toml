@@ -61,9 +61,6 @@ pages = [
 product = "gitlab"
 hosts = ["gitlab.obs.getblogger.ru", "gitlab.services.mts.ru"]
 
-[mreviewer]
-rules = ["./upl-review-rules.md"]
-
 [dispatch]
 # Префикс ключа задачи -> путь группы проектов в хосте.
 key_prefix_map = { UPL = "getblogger/upl" }

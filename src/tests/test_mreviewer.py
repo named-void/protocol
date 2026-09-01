@@ -31,7 +31,7 @@ class ResolveMrTest(unittest.TestCase):
                 "https://gitlab.example.com/group/%2E%2E/project/-/merge_requests/1"
             )
 
-    def test_resolves_local_checkout_and_rules_offline(self) -> None:
+    def test_resolves_local_checkout_and_profiles_offline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             checkout = root / "services" / "catalog"
@@ -49,10 +49,8 @@ class ResolveMrTest(unittest.TestCase):
                 ],
                 check=True,
             )
-            rules = root / "upl.md"
-            rules.write_text("# rules\n", encoding="utf-8")
-            review_rules = root / "upl-review.md"
-            review_rules.write_text("# review rules\n", encoding="utf-8")
+            profile = root / "upl.md"
+            profile.write_text("# profile\n", encoding="utf-8")
             with (
                 mock.patch.object(
                     resolve_mr.skills_config,
@@ -66,12 +64,7 @@ class ResolveMrTest(unittest.TestCase):
                 mock.patch.object(
                     resolve_mr.skills_config,
                     "profiles_for_path",
-                    return_value=[rules],
-                ),
-                mock.patch.object(
-                    resolve_mr.skills_config,
-                    "mreviewer_rules",
-                    return_value=[review_rules],
+                    return_value=[profile],
                 ),
             ):
                 result = resolve_mr.resolve(
@@ -82,7 +75,7 @@ class ResolveMrTest(unittest.TestCase):
             self.assertTrue(result["local_exists"])
             self.assertTrue(result["checkout_matches"])
             self.assertEqual(
-                [str(review_rules.resolve()), str(rules.resolve())],
+                [str(profile.resolve())],
                 result["rules_paths"],
             )
             self.assertTrue(result["rules_exist"])
@@ -109,7 +102,7 @@ class ResolveMrTest(unittest.TestCase):
                 )
             )
 
-    def test_allows_project_without_extra_rules(self) -> None:
+    def test_allows_project_without_profiles(self) -> None:
         with (
             mock.patch.object(
                 resolve_mr.skills_config,
@@ -122,9 +115,6 @@ class ResolveMrTest(unittest.TestCase):
             ),
             mock.patch.object(
                 resolve_mr.skills_config, "profiles_for_path", return_value=[]
-            ),
-            mock.patch.object(
-                resolve_mr.skills_config, "mreviewer_rules", return_value=[]
             ),
         ):
             result = resolve_mr.resolve(

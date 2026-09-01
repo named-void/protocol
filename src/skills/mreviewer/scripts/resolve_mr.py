@@ -69,15 +69,10 @@ def resolve(url: str) -> dict[str, object]:
     try:
         project = skills_config.resolve_vcs_project(host, project_path)
         local_path = Path(project["local_path"]).resolve()
-        rules_paths = list(
-            dict.fromkeys(
-                Path(path).resolve()
-                for path in [
-                    *skills_config.mreviewer_rules(str(project["name"])),
-                    *skills_config.profiles_for_path(local_path),
-                ]
-            )
-        )
+        rules_paths = [
+            Path(path).resolve()
+            for path in skills_config.profiles_for_path(local_path)
+        ]
     except skills_config.ConfigError as exc:
         raise ResolveError(str(exc)) from exc
     checkout_matches = local_path.is_dir() and origin_matches(
