@@ -65,7 +65,20 @@ class MCPHandler(BaseHTTPRequestHandler):
             )
             return
         if payload["method"] == "tools/list":
-            result = {"tools": [{"name": "confluence_search", "inputSchema": {}}]}
+            result = {
+                "tools": [
+                    {
+                        "name": "confluence_search",
+                        "inputSchema": {},
+                        "annotations": {"readOnlyHint": True},
+                    },
+                    {
+                        "name": "confluence_update_page",
+                        "inputSchema": {},
+                        "annotations": {"destructiveHint": True},
+                    },
+                ]
+            }
         else:
             type(self).tool_calls.append(payload["params"])
             result = {
@@ -648,6 +661,42 @@ class WikiClientTest(unittest.TestCase):
 
         self.assertEqual(result.returncode, 1)
         self.assertEqual(MCPHandler.tool_calls, [])
+
+    def test_call_allows_tool_explicitly_marked_read_only(self) -> None:
+        result = self._run(
+            "call", "confluence_search", "--arguments", '{"query":"contract"}'
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            MCPHandler.tool_calls,
+            [{"name": "confluence_search", "arguments": {"query": "contract"}}],
+        )
+
+    def test_call_rejects_write_tool_before_invocation(self) -> None:
+        result = self._run(
+            "call", "confluence_update_page", "--arguments", '{"page_id":"1"}'
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("external write denied", result.stderr)
+        self.assertIn("tools/list", MCPHandler.methods)
+        self.assertEqual(MCPHandler.tool_calls, [])
+
+    def test_write_call_uses_separate_external_write_route(self) -> None:
+        result = self._run(
+            "write-call",
+            "confluence_update_page",
+            "--arguments",
+            '{"page_id":"1"}',
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            MCPHandler.tool_calls,
+            [{"name": "confluence_update_page", "arguments": {"page_id": "1"}}],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -247,6 +247,7 @@ def execute(
     *,
     tool: str | None = None,
     arguments: dict[str, Any] | None = None,
+    require_read_only: bool = False,
 ) -> Any:
     if command not in ("tools", "call"):
         raise MCPError(f"unsupported command {command!r}")
@@ -265,6 +266,23 @@ def execute(
                 item for item in client.list_tools()
                 if item.get("name", "").startswith(tool_prefix)
             ]
+        if require_read_only:
+            matching = [
+                item for item in client.list_tools()
+                if item.get("name") == tool
+            ]
+            if len(matching) != 1:
+                raise MCPError(
+                    f"tool {tool!r} is not uniquely declared by the MCP server"
+                )
+            annotations = matching[0].get("annotations")
+            if (
+                not isinstance(annotations, dict)
+                or annotations.get("readOnlyHint") is not True
+            ):
+                raise MCPError(
+                    f"external write denied: tool {tool!r} is not explicitly read-only"
+                )
         return client.call_tool(tool, arguments or {})
 
 

@@ -75,7 +75,20 @@ class MCPHandler(BaseHTTPRequestHandler):
             )
             return
         if payload["method"] == "tools/list":
-            result = {"tools": [{"name": "jira_search", "inputSchema": {}}]}
+            result = {
+                "tools": [
+                    {
+                        "name": "jira_search",
+                        "inputSchema": {},
+                        "annotations": {"readOnlyHint": True},
+                    },
+                    {
+                        "name": "jira_transition_issue",
+                        "inputSchema": {},
+                        "annotations": {"destructiveHint": True},
+                    },
+                ]
+            }
         elif payload["params"]["name"] == "jira_fail":
             result = {
                 "content": [{"type": "text", "text": "expected failure"}],
@@ -273,7 +286,8 @@ class TrackerClientTest(unittest.TestCase):
         config = load_server_config("jira")
         with StreamableHTTPClient(config) as client:
             self.assertEqual(
-                [tool["name"] for tool in client.list_tools()], ["jira_search"]
+                [tool["name"] for tool in client.list_tools()],
+                ["jira_search", "jira_transition_issue"],
             )
             self.assertFalse(client.call_tool("jira_search", {})["isError"])
 
@@ -478,6 +492,33 @@ class TrackerClientTest(unittest.TestCase):
         self.assertEqual(
             MCPHandler.tool_calls,
             [{"name": "jira_search_fields", "arguments": {"keyword": "sprint"}}],
+        )
+
+    def test_call_rejects_write_tool_before_invocation(self) -> None:
+        result = self._run(
+            "call",
+            "jira_transition_issue",
+            "--arguments",
+            '{"issue_key":"UPL-1"}',
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("external write denied", result.stderr)
+        self.assertIn("tools/list", MCPHandler.methods)
+        self.assertEqual(MCPHandler.tool_calls, [])
+
+    def test_write_call_uses_separate_external_write_route(self) -> None:
+        result = self._run(
+            "write-call",
+            "jira_transition_issue",
+            "--arguments",
+            '{"issue_key":"UPL-1"}',
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            MCPHandler.tool_calls,
+            [{"name": "jira_transition_issue", "arguments": {"issue_key": "UPL-1"}}],
         )
 
 

@@ -298,10 +298,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("tools", help="list tools and schemas")
 
-    call_parser = subparsers.add_parser("call", help="call any docs-wiki tool")
-    call_parser.add_argument("tool")
-    call_parser.add_argument("--arguments")
-    call_parser.add_argument("--arguments-file")
+    for command, help_text in (
+        ("call", "call an explicitly read-only docs-wiki tool"),
+        ("write-call", "call a docs-wiki write tool after /external-write"),
+    ):
+        call_parser = subparsers.add_parser(command, help=help_text)
+        call_parser.add_argument("tool")
+        call_parser.add_argument("--arguments")
+        call_parser.add_argument("--arguments-file")
 
     page_parser = subparsers.add_parser(
         "page",
@@ -382,13 +386,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "tools":
             result = execute(MCP_SERVER, TOOL_PREFIX, "tools")
-        elif args.command == "call":
+        elif args.command in ("call", "write-call"):
             result = execute(
                 MCP_SERVER,
                 TOOL_PREFIX,
                 "call",
                 tool=args.tool,
                 arguments=parse_arguments(args.arguments, args.arguments_file),
+                require_read_only=args.command == "call",
             )
         elif args.command == "page":
             # get_page не принимает content_format: формат тела управляется
