@@ -35,6 +35,8 @@ description: 'Триггер: явная команда пользователя
 
 ## Вход и рабочий каталог
 
+В рамках protocol issue tracker является только read-only источником: не выполняй `transition-status` и не предлагай сменить статус issue. Точная команда `/external-write issue-tracker ...` активирует отдельный маршрут `adapter-issues` и не является шагом protocol.
+
 ### С Jira URL
 
 Для одного явного Jira URL сначала выполни `"$PROTOCOL_SKILL/scripts/resolve_issue.py" '<ISSUE_URL>'`. Resolver принимает абсолютный HTTP(S) URL с точным путём `/browse/<KEY>` и возвращает ключ, проект и разрешённые корни. Неизвестный host, ключ, неоднозначный проект или недоступный корень блокирует маршрут.
