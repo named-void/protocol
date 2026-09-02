@@ -64,12 +64,10 @@ commit_title_format = "<KEY> <прошедшее время>"
 key_prefix_map = { KEY = "<группа>/<подгруппа>" }
 
 [thresholds]
-# Базовый интервал heartbeat независимой проверки, секунд.
-heartbeat_seconds = 120
-# После `heartbeat_seconds × heartbeat_ping_multiplier` координатор отправляет один ping.
-heartbeat_ping_multiplier = 2
-# После `heartbeat_seconds × heartbeat_dead_multiplier` проверка считается заблокированной.
-heartbeat_dead_multiplier = 5
+# Интервал ожидания reviewer через штатный awaiter, секунд.
+review_wait_seconds = 120
+# Общий лимит прохода с первого подтверждённого `running`, секунд.
+review_timeout_seconds = 1200
 
 # Профили, подключаемые к работе. Путь вида `profiles/<файл>.md` — от корня
 # репозитория правил (технологические профили); путь с `./` — от каталога

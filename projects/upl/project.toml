@@ -91,6 +91,5 @@ branch_types = ["feature", "bugfix", "hotfix"]
 commit_title_format = "<KEY> <прошедшее время>"
 
 [thresholds]
-heartbeat_seconds = 120
-heartbeat_ping_multiplier = 2
-heartbeat_dead_multiplier = 5
+review_wait_seconds = 120
+review_timeout_seconds = 1200

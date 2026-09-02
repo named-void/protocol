@@ -24,7 +24,7 @@ CLI::
 Configuration is a single layer — the carrier map:
 ``<projects-root>/<name>/project.toml`` for an identified project and
 ``<projects-root>/_common/project.toml`` outside one.
-It holds roots, adapter values and heartbeat thresholds; secrets (``[mcp.*]`` with ``url`` and ``http_headers``) live in the secrets file outside git and nowhere else.
+It holds roots, adapter values and review timing; secrets (``[mcp.*]`` with ``url`` and ``http_headers``) live in the secrets file outside git and nowhere else.
 
 ``get`` prints the resolved value and exits 1 when the key is missing and
 no default was supplied. ``validate`` type-checks the known keys of every
@@ -492,13 +492,10 @@ EXPECTED_TYPES: dict[str, list[str]] = {
         "docs_wiki.rest.url_header",
         "docs_wiki.rest.token_header",
         "vcs.commit_title_format",
-        # Базовый интервал heartbeat сессии; остальные пороги строятся его
-        # коэффициентами.
-        "thresholds.heartbeat_seconds",
-        # Коэффициент тишины до ping.
-        "thresholds.heartbeat_ping_multiplier",
-        # Множитель heartbeat для порога stale/died.
-        "thresholds.heartbeat_dead_multiplier",
+        # Интервал штатного awaiter при наблюдении за reviewer.
+        "thresholds.review_wait_seconds",
+        # Общий лимит прохода reviewer с первого running.
+        "thresholds.review_timeout_seconds",
     ],
     "list": [
         "vcs.branch_types",

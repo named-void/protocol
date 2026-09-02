@@ -212,14 +212,18 @@ class ProjectLayerTest(unittest.TestCase):
         outside = self.run_cli("get", "dispatch.key_prefix_map", "--json", carrier=self.outside)
         self.assertEqual(1, outside.returncode)
 
-    def test_project_declares_heartbeat_threshold(self) -> None:
+    def test_project_declares_review_timing(self) -> None:
         self.write_project(
             "acme",
             f'[project]\nroots = ["{self.work}"]\n\n'
-            '[thresholds]\nheartbeat_seconds = 30\n',
+            '[thresholds]\nreview_wait_seconds = 30\nreview_timeout_seconds = 1200\n',
         )
         self.assertEqual(
-            "30", self.run_cli("get", "thresholds.heartbeat_seconds", cwd=self.work).stdout.strip()
+            "30", self.run_cli("get", "thresholds.review_wait_seconds", cwd=self.work).stdout.strip()
+        )
+        self.assertEqual(
+            "1200",
+            self.run_cli("get", "thresholds.review_timeout_seconds", cwd=self.work).stdout.strip(),
         )
 
     def test_adapter_off_values_are_normalized(self) -> None:
