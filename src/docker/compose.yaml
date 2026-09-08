@@ -1,0 +1,40 @@
+# Окружение запуска задач omp: контейнер с релизной omp, каталог git-репозиториев
+# хоста монтируется в /workspace/repos. Синхронизация с remote (pull/push) —
+# только на хосте: в контейнере remote-транспорт git запрещён системным
+# gitconfig образа, креды в контейнер не монтируются.
+#
+# Конфигурация omp — отдельный каталог подключаемых конфигов провайдеров
+# подключения на хосте (OMP_CONFIG_HOST_DIR): создаётся до запуска, файлы
+# провайдеров кладутся туда; ~/.omp станции не используется.
+#
+# Запуск: docker compose -f src/docker/compose.yaml -p <имя проекта> up -d
+# (переменные читаются из .env рядом с compose.yaml; container_name не задаётся:
+# фиксированное имя пересоздаёт одноимённый чужой контейнер станции, а имя
+# проекта задаёт -p).
+# Интерактив: docker exec -it <container> omp ...
+# Со станции на сервер: docker context create omp-server --docker "ssh://user@server",
+# затем docker --context omp-server compose -f src/docker/compose.yaml -p ... up -d.
+
+services:
+  runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omp-runner:dev
+    init: true
+    # Контейнер держится поднятым: сессии заходят exec, разовая команда — run --rm.
+    command: ["sleep", "infinity"]
+    environment:
+      HOME: /home/agent
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # Каталог git-репозиториев хоста (сервера): задачи работают в них,
+      # git pull/push выполняет хост.
+      - ${REPOS_HOST_DIR}:/workspace/repos
+      # Подключаемые конфиги провайдеров omp: монтируются явно, в образ не входят.
+      - ${OMP_CONFIG_HOST_DIR}:/home/agent/.omp
+    # На macOS владельца выравнивает virtiofs и значение игнорируется;
+    # на Linux-хосте без него файлы достаются root.
+    user: ${HOST_UID:-0}:${HOST_GID:-0}
+    working_dir: /workspace
