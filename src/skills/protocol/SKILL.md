@@ -38,7 +38,7 @@ description: 'Триггеры: отдельное сообщение польз
 
 ## Подготовка общих инструкций
 
-В режиме `read-protocol` после Bootstrap прочитай карту `upl`, `$PROTOCOL_SKILL/references/git-lifecycle.md`, общие для `upl/services` проектный и технологические профили и все файлы каталога `<UPL_ROOT>/templates/templ-service/policy`. Выбери существующий `UPL_ROOT` из `project.roots`; отсутствующий обязательный файл или каталог блокирует подготовку.
+В режиме `read-protocol` после Bootstrap прочитай карту `upl`, `$PROTOCOL_SKILL/references/git-lifecycle.md`, общие для `upl/services` проектный и технологические профили и все файлы каталога `<UPL_ROOT>/templates/templ-service/policy`. В самом конце этого чтения, восстановив сохранённый при discovery абсолютный `AGENT_SKILLS_DIR`, прочитай `$AGENT_SKILLS_DIR/adapter-issues/SKILL.md` и `$AGENT_SKILLS_DIR/adapter-vcs/SKILL.md`. Выбери существующий `UPL_ROOT` из `project.roots`; отсутствующий обязательный файл или каталог блокирует подготовку.
 
 Не читай issue, не вызывай адаптеры, не выполняй Branch-Sync, не выбирай сервис или checkout, не создавай task state и не меняй файлы или Git. После успешной загрузки кратко подтверди готовность и не переходи к выполнению задачи.
 
