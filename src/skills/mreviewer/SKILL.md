@@ -34,7 +34,7 @@ description: 'Триггеры: явный URL GitLab Merge Request и прос�
 
 ## Общий технический checker
 
-После подготовки immutable MR-снимка вызови общий checker в отдельном reviewer-thread с режимом `full` и `review_mode: technical`.
+После подготовки immutable MR-снимка вызови общий checker в отдельном reviewer-thread с режимом `technical`.
 
 Сверь source SHA MR с ожидаемым `CANDIDATE`; при несовпадении зафиксируй `stale`. Передай checker список `repositories` с `WORK_ROOT`, `BASE` и проверенным `CANDIDATE`, технические `rules_paths`, необходимые технические evidence и назначенные абсолютные пути `progress` и `result`.
 

@@ -139,7 +139,7 @@ Issue key проверь по `issue_tracker.key_pattern` текущей кар�
 Работа идёт итерациями двух видов; каждая — каталог в `TASK_DIR` со сквозной нумерацией, которая не сбрасывается между циклами:
 
 - `implementation-<N>/` — итерация реализации: `notes.md` с решениями, обоснованиями и событиями, сохранённые выводы прогонов `*.log`, копии обязательных evidence-файлов вне Git;
-- Храни в `review-<M>/` итерацию независимой проверки: для `full` отдельные `requirements/progress`, `requirements/result`, `technical/progress` и `technical/result` двух checker-thread и агрегированный `result`; для `fixes` отдельные `requirements/progress` и `requirements/result` одного checker-thread и агрегированный `result` без технического результата. Передавай checker абсолютные пути к назначенным файлам.
+- Храни в `review-<M>/` итерацию независимой проверки: для `requirements` отдельные `requirements/progress` и `requirements/result`, для `technical` отдельные `technical/progress` и `technical/result`, для `requirements-fix` отдельные `requirements-fix/progress` и `requirements-fix/result`; каждому режиму назначай свой checker-thread и пути `progress` и `result`, а в корне итерации храни агрегированный `result`. Передавай checker абсолютные пути к назначенным файлам.
 
 При входе в Define создай первую итерацию `implementation-<N>` текущего цикла и веди в ней `notes.md`; отдельного носителя у Define нет.
 
@@ -158,7 +158,7 @@ Issue key проверь по `issue_tracker.key_pattern` текущей кар�
 Доработка принятого результата — изменение требований, findings или существенные вопросы независимого ревью, отложенная работа, просьба перепроверить готовое — открывает следующий цикл той же задачи и возвращает `status` в `define`. Цикл имеет один из двух видов, и вид определяет `base`:
 
 - `extend` — цикл добавляет работу поверх принятого результата. `base` — полный SHA `HEAD` на входе в `implement`. Цикл 1 всегда `extend`.
-- `recheck` — требования не меняются, перепроверяется уже принятый результат. Нового `base` не фиксируй: `base` цикла равен `base` того цикла, чей результат перепроверяется, иначе диапазон пуст и режим `full` не увидит ничего. Итерацию реализации такой цикл всё равно открывает: она не меняет код, а подтверждает снимок, догон базы и обязательные проверки перед проходом checker.
+- `recheck` — требования не меняются, перепроверяется уже принятый результат. Нового `base` не фиксируй: `base` цикла равен `base` того цикла, чей результат перепроверяется, иначе диапазон пуст и режимы `requirements` и `technical` не увидят изменений. Итерацию реализации такой цикл всё равно открывает: она не меняет код, а подтверждает снимок, догон базы и обязательные проверки перед проходом checker.
 
 Отдельную задачу заводи только в двух случаях:
 
@@ -254,7 +254,7 @@ High-risk план должен содержать инварианты, отк�
 
 После завершения используй статус и путь каждого назначенного `result` для продолжения приёмки.
 
-Допускай в одном цикле задачи один первичный и не более четырёх повторных завершённых агрегированных проходов checker. Считай два child-thread режима `full` одним проходом `review-<M>`, а не двумя.
+Допускай в одном цикле задачи один первичный и не более четырёх повторных завершённых агрегированных проходов checker. Считай два child-thread режимов `requirements` и `technical` одним проходом `review-<M>`, а не двумя.
 
 Лимит считай по итерациям `review-<M>`, отнесённым в `state.md` к текущему циклу: сквозной номер итерации в лимит не переносится, проходы прошлых циклов в него не входят, `stale` и `blocked` проходами не считаются.
 
@@ -265,14 +265,14 @@ High-risk план должен содержать инварианты, отк�
    - при достижении лимита установи `blocked`, запиши в `state.md` перечень нерешённых блокеров и первое действие в `next`, затем останови маршрут;
    - при отсутствии лимита перейди к шагу 3.
 3. Заведи следующую итерацию `review-<M>`.
-4. Назначь для `full` абсолютные пути `<TASK_DIR>/review-<M>/requirements/progress`, `<TASK_DIR>/review-<M>/requirements/result`, `<TASK_DIR>/review-<M>/technical/progress` и `<TASK_DIR>/review-<M>/technical/result`; запиши агрегированный итог в `<TASK_DIR>/review-<M>/result`. Назначь для `fixes` единственному requirements-checker пути `<TASK_DIR>/review-<M>/requirements/progress` и `<TASK_DIR>/review-<M>/requirements/result`; запиши итог protocol в `<TASK_DIR>/review-<M>/result`.
+4. Назначь для `requirements` абсолютные пути `<TASK_DIR>/review-<M>/requirements/progress` и `<TASK_DIR>/review-<M>/requirements/result`, для `technical` — `<TASK_DIR>/review-<M>/technical/progress` и `<TASK_DIR>/review-<M>/technical/result`, для `requirements-fix` — `<TASK_DIR>/review-<M>/requirements-fix/progress` и `<TASK_DIR>/review-<M>/requirements-fix/result`; запиши агрегированный итог в `<TASK_DIR>/review-<M>/result`.
 5. Подтверди перед запуском checker, что обязательные тесты, сборка, линтеры и project verify успешно завершены в Implement, а evidence и их SHA-256 относятся к текущему clean candidate. При ненулевом результате или предупреждении, требующем исправления, верни задачу в `implement`, устрани проблему и повтори весь затронутый набор проверок. Если проверка изменила рабочее дерево, проверь diff, прими только допустимые изменения и повтори зависимые проверки; не передавай checker evidence до получения стабильного clean candidate.
-6. Подготовь для `full` два объекта: передай requirements-thread scope, требования, критерии, условный `plan.md`, правила Accept, task-артефакты, применимые профили, policy-файлы и проверенные evidence; передай technical-thread только проектные и технологические профили, технические policy-файлы и необходимые evidence. Не передавай technical-thread issue, `state.md`, внутренние требования, scope, критерии или plan задачи и не передавай checker-thread runtime-историю и полный реестр findings и вопросов.
-7. Подготовь для `fixes` один объект requirements-checker с режимом `fixes`, `review_mode: requirements`, списком `repositories` с `BASE = checked_candidate` и текущим `CANDIDATE` для каждого репозитория и только принятыми открытыми блокерами и существенными вопросами как целями проверки. Не запускай technical-thread для `fixes`.
-8. Запусти для первичного прохода режима `full` одновременно два независимых checker-thread с одним и тем же списком `repositories`, сохранёнными `BASE` цикла и текущими `CANDIDATE`: `review_mode: requirements` и `review_mode: technical`. Передай обоим thread один immutable диапазон, общие SHA, применимые профили и обязательные evidence; назначь им отдельные `progress` и `result`. Запускай локальный `protocol/full` без `mreviewer` и MR URL.
-9. Запусти для повторного прохода единственный requirements-checker и ожидай его по обычному лимиту checker.
-10. Ожидай оба `full` thread через один общий дедлайн для объединённого `review-<M>`, начиная его при первом подтверждённом `running`.
-11. После завершения `full` прочитай оба child-result, а после завершения `fixes` — requirements child-result.
+6. Подготовь для первичного прохода два объекта: передай requirements-thread scope, требования, критерии, условный `plan.md`, правила Accept, task-артефакты, применимые профили, policy-файлы и проверенные evidence; передай technical-thread только проектные и технологические профили, технические policy-файлы и необходимые evidence. Не передавай technical-thread issue, `state.md`, внутренние требования, scope, критерии или plan задачи и не передавай checker-thread runtime-историю и полный реестр findings и вопросов.
+7. Подготовь для режима `requirements-fix` один объект checker с `mode: requirements-fix`, списком `repositories` с `BASE = checked_candidate` и текущим `CANDIDATE` для каждого репозитория и только принятыми открытыми блокерами и существенными вопросами как целями проверки. Не запускай режим `technical` для этого прохода.
+8. Запусти для первичного прохода режимов `requirements` и `technical` одновременно два независимых checker-thread с одним и тем же списком `repositories`, сохранёнными `BASE` цикла и текущими `CANDIDATE`: передай первому `mode: requirements`, второму `mode: technical`. Передай обоим thread один immutable диапазон, общие SHA, применимые профили и обязательные evidence; назначь им отдельные `progress` и `result`.
+9. Запусти для повторного прохода единственный checker в режиме `requirements-fix` и ожидай его по обычному лимиту checker.
+10. Ожидай оба первичных thread режимов `requirements` и `technical` через один общий дедлайн для объединённого `review-<M>`, начиная его при первом подтверждённом `running`.
+11. После завершения режимов `requirements` и `technical` прочитай оба child-result, а после завершения режима `requirements-fix` — его child-result.
 12. При `stale` верни задачу в `implement` для восстановления снимка.
 13. При отсутствии или нечитаемости обязательного результата либо при `failed` или `blocked` установи в `state.md` `status: blocked`, запиши причину и первое действие в `next`, затем останови маршрут.
 14. Не обновляй `checked_candidate` ни в одном из этих состояний.
