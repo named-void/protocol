@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resolve a Jira issue URL to a configured project carrier."""
+"""Resolve a Jira issue URL or key to a configured project carrier."""
 
 from __future__ import annotations
 
@@ -34,8 +34,18 @@ def parse_url(value: str) -> tuple[str, str]:
     return parsed.hostname.lower(), key
 
 
-def resolve(url: str) -> dict[str, object]:
-    host, raw_key = parse_url(url)
+def parse_key(value: str) -> str:
+    key = value.strip()
+    if not key or key in {".", ".."} or "/" in key:
+        raise ResolveError("expected an issue key")
+    return key
+
+
+def _resolve(
+    raw_key: str,
+    requested_host: str | None,
+    source_url: str | None,
+) -> dict[str, object]:
     try:
         project_name, channel = skills_config.identify_project(key=raw_key)
         if project_name is None or channel != "issue-key":
@@ -49,8 +59,16 @@ def resolve(url: str) -> dict[str, object]:
         if isinstance(hosts, str) or not isinstance(hosts, list) or not hosts:
             raise ResolveError(f"project '{project_name}' has no Jira URL hosts")
         allowed_hosts = {str(item).strip().lower() for item in hosts}
-        if host not in allowed_hosts:
-            raise ResolveError(f"no project mapping for Jira host {host}")
+        if requested_host is None:
+            if len(allowed_hosts) != 1:
+                raise ResolveError(
+                    f"project '{project_name}' must configure exactly one Jira URL host for key resolution"
+                )
+            host = next(iter(allowed_hosts))
+        else:
+            host = requested_host.lower()
+            if host not in allowed_hosts:
+                raise ResolveError(f"no project mapping for Jira host {host}")
 
         pattern = str(
             issue_tracker.get("key_pattern", r"^[A-Za-z][A-Za-z0-9]*-[0-9]+$")
@@ -63,7 +81,7 @@ def resolve(url: str) -> dict[str, object]:
         raise ResolveError(str(exc)) from exc
 
     return {
-        "url": url,
+        "url": source_url or f"https://{host}/browse/{key}",
         "host": host,
         "key": key,
         "project": project_name,
@@ -72,12 +90,22 @@ def resolve(url: str) -> dict[str, object]:
     }
 
 
+def resolve(url: str) -> dict[str, object]:
+    host, raw_key = parse_url(url)
+    return _resolve(raw_key, host, url)
+
+
+def resolve_key(value: str) -> dict[str, object]:
+    return _resolve(parse_key(value), None, None)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("url")
+    parser.add_argument("value", help="Jira issue URL or issue key")
     args = parser.parse_args()
     try:
-        output = resolve(args.url)
+        value = args.value.strip()
+        output = resolve(value) if value.startswith(("http://", "https://")) else resolve_key(value)
     except (OSError, ResolveError) as exc:
         print(f"resolve-issue: {exc}", file=sys.stderr)
         return 2

@@ -33,12 +33,12 @@ class ProtocolIssueEntryTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def run_resolver(self, url: str) -> subprocess.CompletedProcess[str]:
+    def run_resolver(self, value: str) -> subprocess.CompletedProcess[str]:
         environment = {**os.environ, "AGENTS_PROJECTS_DIR": str(self.projects)}
         environment.pop("AGENTS_PROJECT", None)
         environment.pop("AGENTS_PROJECT_PATH", None)
         return subprocess.run(
-            [sys.executable, str(SCRIPT), url],
+            [sys.executable, str(SCRIPT), value],
             cwd=str(ROOT),
             env=environment,
             text=True,
@@ -51,9 +51,19 @@ class ProtocolIssueEntryTest(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         payload = json.loads(result.stdout)
+        self.assertEqual("https://jira.example.test/browse/upl-892", payload["url"])
         self.assertEqual("UPL-892", payload["key"])
         self.assertEqual("upl", payload["project"])
         self.assertEqual([str(self.checkout_root.resolve())], payload["project_roots"])
+
+    def test_resolves_issue_key_to_configured_host(self) -> None:
+        result = self.run_resolver("upl-892")
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual("https://jira.example.test/browse/UPL-892", payload["url"])
+        self.assertEqual("jira.example.test", payload["host"])
+        self.assertEqual("UPL-892", payload["key"])
 
     def test_rejects_unconfigured_host(self) -> None:
         result = self.run_resolver("https://other.example.test/browse/UPL-892")
