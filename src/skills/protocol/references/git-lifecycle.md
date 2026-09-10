@@ -1,5 +1,9 @@
 # Жизненный цикл Git
 
+## Собственный репозиторий protocol
+
+Репозиторий, содержащий `$PROTOCOL_SRC`, не входит в Branch-Sync этого маршрута: его собственные изменения выполняй только в основном checkout на ветке `main`, без task-ветки и task worktree. Для остальных репозиториев действуют правила ниже.
+
 ## Branch-Sync
 
 1. Засей конфигурацию командой `eval "$(python3 "$PROTOCOL_SRC/lib/skills_config.py" export-env)"`.
