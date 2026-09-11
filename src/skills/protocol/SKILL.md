@@ -152,7 +152,7 @@ Issue key проверь по `issue_tracker.key_pattern` текущей кар�
 Работа идёт итерациями двух видов; каждая — каталог в `TASK_DIR` со сквозной нумерацией, которая не сбрасывается между циклами:
 
 - `implementation-<N>/` — итерация реализации: `notes.md` с решениями, обоснованиями и событиями, сохранённые выводы прогонов `*.log`, копии обязательных evidence-файлов вне Git;
-- Храни в `review-<M>/` итерацию независимой проверки: для `requirements` отдельные `requirements/progress` и `requirements/result`, для `technical` отдельные `technical/progress` и `technical/result`, для `requirements-fix` отдельные `requirements-fix/progress` и `requirements-fix/result`; каждому режиму назначай свой checker-thread и пути `progress` и `result`, а в корне итерации храни агрегированный `result`. Передавай checker абсолютные пути к назначенным файлам.
+- Храни в `review-<M>/` итерацию независимой проверки: для `requirements` отдельные `requirements/progress` и `requirements/result`, для `technical` отдельные `technical/progress` и `technical/result`, для `requirements-fix` отдельные `requirements-fix/progress` и `requirements-fix/result`; каждому режиму назначай свой checker-thread и пути `progress` и `result`, а в корне итерации храни агрегированный `result`.
 
 При входе в Define создай первую итерацию `implementation-<N>` текущего цикла и веди в ней `notes.md`; отдельного носителя у Define нет.
 
@@ -273,24 +273,31 @@ High-risk план должен конкретизировать выполне�
 
 Лимит считай по итерациям `review-<M>`, отнесённым в `state.md` к текущему циклу: сквозной номер итерации в лимит не переносится, проходы прошлых циклов в него не входят, `stale` и `blocked` проходами не считаются.
 
+### Immutable вход checker и recovery
+
+Перед созданием любого reviewer атомарно подготовь `<TASK_DIR>/review-<M>/manifest`; он является единственным замороженным входом прохода и не изменяется после запуска reviewer.
+
+Manifest фиксирует режим, репозитории, `BASE`/`CANDIDATE` Git trees, digest правил и evidence и абсолютные пути child- и aggregate-result. Для каждого сочетания режима и репозитория вычисли `input_digest` по канонической сериализации его входов, исключив номер review, output paths и runtime-состояние, чтобы одинаковый результат можно было переиспользовать независимо от других репозиториев.
+
+Запиши manifest во временный файл в том же каталоге, проверь snapshots, ancestry, clean worktrees, правила и evidence, затем атомарно переименуй его и только после этого запиши его путь в `state.md`. При несовпадении входов не запускай reviewer и не меняй `checked_candidate`: сдвиг snapshot возвращает задачу в `implement`, повреждённый manifest/evidence/result — в `accept` или `blocked` с причиной и `next`.
+
+Переиспользуй только завершённый child-result с тем же `input_digest`, подтверждёнными final snapshot и SHA-256 evidence. При recovery собери aggregate-result из таких child-result и выполни protocol-gate без reviewer, если aggregate-result отсутствует; запускай reviewer только для отсутствующих или изменившихся режимов и репозиториев. Для принятых открытых целей запускай только `requirements-fix` с `checked_candidate`, а не полный `requirements`/`technical`.
+
+До открытия нового цикла проверь, что `status: completed` подтверждён принятым aggregate-result, завершёнными checker и protocol-gate, Git-финализацией, evidence и QA-комментарием. Иначе продолжи текущий цикл с последнего валидного состояния и не запускай полный аудит.
+
 ### Подготовка и запуск checker
 
-1. Проверь наличие перечня итераций цикла и `checked_candidate` в `state.md`; восстанови их по сохранённым `review-<M>/result` при отсутствии.
+1. Проверь наличие перечня итераций цикла, `checked_candidate`, предыдущих manifest и result в `state.md`; валидные результаты с совпадающим `input_digest`, final snapshot и SHA-256 evidence переиспользуй.
 2. Проверь перед созданием итерации, достигнут ли лимит пяти завершённых проходов текущего цикла:
    - при достижении лимита установи `blocked`, запиши в `state.md` перечень нерешённых блокеров и первое действие в `next`, затем останови маршрут;
    - при отсутствии лимита перейди к шагу 3.
 3. Заведи следующую итерацию `review-<M>`.
-4. Назначь для `requirements` абсолютные пути `<TASK_DIR>/review-<M>/requirements/progress` и `<TASK_DIR>/review-<M>/requirements/result`, для `technical` — `<TASK_DIR>/review-<M>/technical/progress` и `<TASK_DIR>/review-<M>/technical/result`, для `requirements-fix` — `<TASK_DIR>/review-<M>/requirements-fix/progress` и `<TASK_DIR>/review-<M>/requirements-fix/result`; запиши агрегированный итог в `<TASK_DIR>/review-<M>/result`.
-5. Подтверди перед запуском checker, что обязательные тесты, сборка, линтеры и project verify успешно завершены в Implement, а evidence и их SHA-256 относятся к текущему clean candidate. При ненулевом результате или предупреждении, требующем исправления, верни задачу в `implement`, устрани проблему и повтори весь затронутый набор проверок. Если проверка изменила рабочее дерево, проверь diff, прими только допустимые изменения и повтори зависимые проверки; не передавай checker evidence до получения стабильного clean candidate.
-6. Подготовь для первичного прохода два объекта: передай requirements-thread scope, единый набор обязательных требований, критерии их проверки, условный `plan.md`, правила Accept, task-артефакты, применимые профили, policy-файлы и проверенные evidence; передай technical-thread только проектные и технологические профили, технические policy-файлы и необходимые evidence. Requirements-thread проверяет только обязательные требования и критерии; технические решения, примеры, размещение по слоям, порядок реализации и команды из `plan.md` или task-артефактов не создают дополнительных требований. Не передавай technical-thread issue, `state.md`, внутренние требования, scope, критерии или plan задачи и не передавай checker-thread runtime-историю и полный реестр findings и вопросов.
-7. Подготовь для режима `requirements-fix` один объект checker с `mode: requirements-fix`, списком `repositories` с `BASE = checked_candidate` и текущим `CANDIDATE` для каждого репозитория и только принятыми открытыми блокерами и существенными вопросами как целями проверки. Не запускай режим `technical` для этого прохода.
-8. Запусти для первичного прохода режимов `requirements` и `technical` одновременно два независимых checker-thread с одним и тем же списком `repositories`, сохранёнными `BASE` цикла и текущими `CANDIDATE`: передай первому `mode: requirements`, второму `mode: technical`. Передай обоим thread один immutable диапазон, общие SHA, применимые профили и обязательные evidence; назначь им отдельные `progress` и `result`.
-9. Запусти для повторного прохода единственный checker в режиме `requirements-fix` и ожидай его по обычному лимиту checker.
-10. Ожидай оба первичных thread режимов `requirements` и `technical` через один общий дедлайн для объединённого `review-<M>`, начиная его при первом подтверждённом `running`.
-11. После завершения режимов `requirements` и `technical` прочитай оба child-result, а после завершения режима `requirements-fix` — его child-result.
-12. При `stale` верни задачу в `implement` для восстановления снимка.
-13. При отсутствии или нечитаемости обязательного результата либо при `failed` или `blocked` установи в `state.md` `status: blocked`, запиши причину и первое действие в `next`, затем останови маршрут.
-14. Не обновляй `checked_candidate` ни в одном из этих состояний.
+4. Назначь пути `progress` и `result` для режимов и aggregate-result; включи их в manifest, атомарно проверь его до reviewer и передай только путь manifest, `input_digest`, режим и `result`.
+5. Собери в manifest mode-specific входы по правилам режимов; для `requirements-fix` используй `BASE = checked_candidate` и только принятые открытые цели.
+6. Перед новым проходом подтверди обязательные проверки и evidence текущего clean candidate; при изменении дерева верни задачу в `implement` и повтори затронутые проверки.
+7. Запусти только отсутствующие режимы и репозитории, одновременно для первичных `requirements`/`technical` и отдельно для `requirements-fix`; неизменившиеся результаты переиспользуй.
+8. Дождись запущенных thread, прочитай result и собери aggregate-result и protocol-gate из полного набора; отсутствие только aggregate-result не запускает reviewer.
+9. При `stale`, несовпадении manifest, отсутствии result, `failed` или `blocked` не обновляй `checked_candidate`; сдвиг snapshot верни в `implement`, остальные причины запиши как `blocked` с первым действием в `next`.
 
 Выполни общий protocol-gate после получения всех обязательных результатов:
 
@@ -306,7 +313,7 @@ High-risk план должен конкретизировать выполне�
      3. Запусти одну независимую countercheck для объединённого списка.
 6. Оставь только кандидатов со статусом `confirmed` из ответов `confirmed`, `rejected` или `unproven`.
 
-После protocol-gate запиши в агрегированный `result` режим, запущенные наборы проверок, проверенные диапазоны и репозитории, состояния child-проходов, итоговое состояние `completed`, `stale` или `blocked`, рекомендацию `accepted` или `revision-required`, решения scope и дедупликации, подтверждённые countercheck findings с источниками, результаты целей и открытые вопросы. Перечитай записанный `result`; нечитаемый результат означает `blocked`.
+После protocol-gate запиши в агрегированный `result` `input_digest`, режим, запущенные и reused наборы проверок, проверенные диапазоны и репозитории, состояния всех child-проходов, итоговое состояние `completed`, `stale` или `blocked`, рекомендацию `accepted` или `revision-required`, решения scope и дедупликации, подтверждённые countercheck findings с источниками, результаты целей и открытые вопросы. Перечитай записанный `result`; нечитаемый результат или несовпадение с manifest означает `blocked`.
 
 После завершения protocol-gate вычисли по итоговой классификации подтверждённых открытых блокеров всех репозиториев и всех запущенных наборов `score = 2 × High + Medium`.
 
@@ -336,7 +343,7 @@ High-risk план должен конкретизировать выполне�
 
 После итогового принятия и до сбора комментария для QA выполни Git-финализацию по [разделу «Результат» в `git-lifecycle.md`](references/git-lifecycle.md#результат).
 
-После успешной финализации собери комментарий для QA по разделу «Комментарий для QA» и только после этого установи `status: completed` и очисти `next`.
+После успешной финализации собери комментарий для QA по разделу «Комментарий для QA», покажи его пользователю, повторно сверь manifest, aggregate-result, все обязательные child-result, Git, snapshots и evidence и только после этого атомарно установи `status: completed` и очисти `next`. При любой несогласованности сохрани `accept` или `blocked` с причиной и первым действием в `next`; новый reviewer из-за этого не запускай.
 
 Task-ветка остаётся локально; push и создание MR/PR выполняются только по отдельной явной команде пользователя.
 
