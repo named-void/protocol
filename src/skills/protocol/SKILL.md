@@ -132,7 +132,7 @@ Issue key проверь по `issue_tracker.key_pattern` текущей кар�
 
 `state.md` состоит из четырёх частей:
 
-1. Состояние: `status` (`define`, `implement`, `accept`, `completed` или `blocked`), `task`, `next` — одна строка с первым действием следующей сессии, `cycle` и его `kind`; для каждого репозитория — `work_root`, `branch`, `isolation` (`worktree` или `checkout`), `base`, `candidate`, `checked_candidate`, а при наличии — `mr`, `origin`, `spawned` и `evidence` с путём и SHA-256 каждого обязательного файла вне Git.
+1. Состояние: `status` (`define`, `implement`, `accept`, `completed` или `blocked`), `task`, `next` — одна строка с первым действием следующей сессии, `cycle` и его `kind`; для каждого репозитория — `work_root`, `branch`, `isolation` (`worktree` или `checkout`), `base`, `candidate`, `checked_candidate`, `checked_tree`, а при наличии — `mr`, `origin`, `spawned` и `evidence` с путём и SHA-256 каждого обязательного файла вне Git.
 2. Задача: цель, scope, требования, критерии приёмки, источники. Одна на задачу, по циклам не раздваивается; меняет её только цикл вида `extend`.
 3. Findings: строка на finding или существенный открытый вопрос — стабильный идентификатор, статус `open`, `resolved` или `rejected`, суть, доказательство либо недостающее доказательство и итерация, где запись заведена; finding дополнительно содержит severity.
 4. Итерации: строка на каталог итерации — её цикл и итог.
@@ -235,7 +235,7 @@ High-risk план должен конкретизировать выполне�
 
 Перед первым изменением прочитай отдельные правила Implement и их приоритет, явно названные применимыми профилями, и разреши конфликты по этому приоритету.
 
-Для HTTP JSON-входа до первого изменения сверяй [профиль HTTP/API](../../profiles/http-api.md): простые условия наличия или отсутствия поля по значению соседнего поля (`required_if`, `required_unless`, `excluded_if`, `excluded_unless`) объявляй в binding-тегах и проверяй до usecase; условия с несколькими альтернативами или нетривиальным сравнением значений, проверки коллекций, сущностей и бизнес-инварианты, которые нельзя однозначно выразить тегами, оставляй в domain/usecase. Binding не заменяет доменную защиту для не-HTTP вызовов; при дублировании сверяй одинаковые поле, код и смысл ошибки.
+Для HTTP JSON-входа до первого изменения сверь [профиль HTTP/API](../../profiles/http-api.md) и примени его правила binding, типизации DTO и ответов об ошибке. Binding не заменяет доменную защиту для не-HTTP вызовов; при дублировании сверяй одинаковые поле, код и смысл ошибки.
 
 Перед первым изменением сверь в `notes.md` применимые обязательные требования и известные ограничения. Если для их выполнения нужен выбор реализации, зафиксируй его как рабочее решение без расширения scope, требований или критериев приёмки.
 
@@ -279,9 +279,9 @@ High-risk план должен конкретизировать выполне�
 
 Перед созданием любого reviewer атомарно подготовь `<TASK_DIR>/review-<M>/manifest`; он является единственным замороженным входом прохода и не изменяется после запуска reviewer.
 
-Manifest фиксирует режим, репозитории, `BASE`/`CANDIDATE` Git trees, digest правил и evidence и абсолютные пути child- и aggregate-result. Для каждого сочетания режима и репозитория вычисли `input_digest` по канонической сериализации его входов, исключив номер review, output paths и runtime-состояние, чтобы одинаковый результат можно было переиспользовать независимо от других репозиториев.
+Manifest фиксирует режим, репозитории, `BASE`/`CANDIDATE` Git trees, digest правил и evidence и абсолютные пути child- и aggregate-result; для `requirements-fix` после переписывания `BASE` включи `CHECKED_TREE`. Для каждого сочетания режима и репозитория вычисли `input_digest` по канонической сериализации его входов, исключив номер review, output paths и runtime-состояние, чтобы одинаковый результат можно было переиспользовать независимо от других репозиториев.
 
-Запиши manifest во временный файл в том же каталоге, проверь snapshots, ancestry, clean worktrees, правила и evidence, затем атомарно переименуй его и только после этого запиши его путь в `state.md`. При несовпадении входов не запускай reviewer и не меняй `checked_candidate`: сдвиг snapshot возвращает задачу в `implement`, повреждённый manifest/evidence/result — в `accept` или `blocked` с причиной и `next`.
+Запиши manifest во временный файл в том же каталоге, проверь snapshots, ancestry либо `CHECKED_TREE` по правилу режима, clean worktrees, правила и evidence, затем атомарно переименуй его и только после этого запиши его путь в `state.md`. При несовпадении входов не запускай reviewer и не меняй `checked_candidate`: сдвиг snapshot возвращает задачу в `implement`, повреждённый manifest/evidence/result — в `accept` или `blocked` с причиной и `next`.
 
 Переиспользуй только завершённый child-result с тем же `input_digest`, подтверждёнными final snapshot и SHA-256 evidence. При recovery собери aggregate-result из таких child-result и выполни protocol-gate без reviewer, если aggregate-result отсутствует; запускай reviewer только для отсутствующих или изменившихся режимов и репозиториев. Для принятых открытых целей запускай только `requirements-fix` с `checked_candidate`, а не полный `requirements`/`technical`.
 
@@ -295,7 +295,7 @@ Manifest фиксирует режим, репозитории, `BASE`/`CANDIDAT
    - при отсутствии лимита перейди к шагу 3.
 3. Заведи следующую итерацию `review-<M>`.
 4. Назначь пути `progress` и `result` для режимов и aggregate-result; включи их в manifest, атомарно проверь его до reviewer и передай только путь manifest, `input_digest`, режим и `result`.
-5. Собери в manifest mode-specific входы по правилам режимов; для `requirements-fix` используй `BASE = checked_candidate` и только принятые открытые цели.
+5. Собери в manifest mode-specific входы по правилам режимов; для `requirements-fix` используй `BASE = checked_candidate`, только принятые открытые цели и, если `BASE` уже не предок `CANDIDATE`, `CHECKED_TREE = BASE^{tree}`.
 6. Перед новым проходом подтверди обязательные проверки и evidence текущего clean candidate; при изменении дерева верни задачу в `implement` и повтори затронутые проверки.
 7. Запусти только отсутствующие режимы и репозитории, одновременно для первичных `requirements`/`technical` и отдельно для `requirements-fix`; неизменившиеся результаты переиспользуй.
 8. Дождись запущенных thread, прочитай result и собери aggregate-result и protocol-gate из полного набора; отсутствие только aggregate-result не запускает reviewer.
