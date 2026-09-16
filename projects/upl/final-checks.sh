@@ -87,8 +87,13 @@ if [[ "$MODE" == "verify" ]]; then
       exit 99
     fi
     if [[ -e "$ORIGINAL_SERVICE_ROOT/$relative_path" ]]; then
-      mkdir -p "$(dirname "$VERIFY_ROOT/$relative_path")"
-      cp -R "$ORIGINAL_SERVICE_ROOT/$relative_path" "$VERIFY_ROOT/$relative_path" \
+      # `cp -R src dst` при существующем dst кладёт src ВНУТРЬ dst
+      # (api/docs/docs/): в обоих наблюдавшихся сервисах в api/docs лежат
+      # tracked-файлы, поэтому каталог в worktree уже существует, и вложенная
+      # копия роняла typecheck или purity. Копируем содержимое с `/.`,
+      # досоздавая каталог при его отсутствии.
+      mkdir -p "$VERIFY_ROOT/$relative_path"
+      cp -R "$ORIGINAL_SERVICE_ROOT/$relative_path/." "$VERIFY_ROOT/$relative_path/" \
         || { printf 'блокер: не удалось скопировать verify input %s\n' "$relative_path" >&2; exit 99; }
     fi
   done
