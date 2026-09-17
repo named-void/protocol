@@ -19,9 +19,9 @@ RUN apk add --no-cache \
         python3 \
         ripgrep
 
-ARG OMP_VERSION=18.1.14
-ARG OMP_SHA256_ARM64=b5401be8afee11bd706b452660844101985f89774ecb2aeee03d588d60b942aa
-ARG OMP_SHA256_AMD64=617d67627154f2e1a07d5bae36e190a47240a55379a3308cd61e7f62b4ce2e82
+ARG OMP_VERSION=18.2.4
+ARG OMP_SHA256_ARM64=130cc0d5a48f1acbd680043ca5a05061e00009ceee42c8b2c3e674bce3dabaff
+ARG OMP_SHA256_AMD64=15c678eecf60a803690b9a48f1cb837c9be5a2415355626eab27468527b672e5
 ARG TARGETARCH
 # Релизный бинарник по платформе сборки; несоответствие чексуммы или сбой
 # запуска ломает сборку, а не кладёт в образ неисполнимый файл.
