@@ -352,6 +352,10 @@ check_testify_convention() {
     # Файлы без тестовых функций — HTTP-моки, фабрики, сид данных — ассертов не
     # содержат по определению, нарушением их считать нечего (SB-105).
     grep -qE '^func (Test|Benchmark|Fuzz)' "$f" || continue
+    # Файл с тестовыми функциями, но без собственных вызовов ассертов — обёртка
+    # над общими testify-хелперами (Assert*/assert*): ассерты пишутся в
+    # хелпере, требовать импорт testify здесь нечего.
+    grep -qE 't\.(Error|Errorf|Fatal|Fatalf|Fail|FailNow|Skip|Skipf)\(' "$f" || continue
     if ! grep -q 'stretchr/testify' "$f"; then
       violations=$((violations + 1))
       printf '%s\n' "$f" >> "$log_file"
