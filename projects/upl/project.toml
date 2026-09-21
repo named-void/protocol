@@ -92,4 +92,4 @@ commit_title_format = "<KEY> <прошедшее время>"
 
 [thresholds]
 review_wait_seconds = 120
-review_timeout_seconds = 1200
+review_timeout_seconds = 600

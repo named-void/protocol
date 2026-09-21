@@ -494,7 +494,7 @@ EXPECTED_TYPES: dict[str, list[str]] = {
         "vcs.commit_title_format",
         # Интервал штатного awaiter при наблюдении за reviewer.
         "thresholds.review_wait_seconds",
-        # Общий лимит прохода reviewer с первого running.
+        # Лимит неактивности reviewer.
         "thresholds.review_timeout_seconds",
     ],
     "list": [
