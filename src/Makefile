@@ -7,6 +7,7 @@ SKILL_LINKS := $(CURDIR)/scripts/manage-skill-links.sh
 INSTRUCTION_LINK := $(CURDIR)/scripts/manage-instruction-link.sh
 DOCTOR := $(CURDIR)/scripts/doctor.sh
 SKILL_PAIRS := protocol $(SKILLS_DIR)/protocol \
+	test-protocol $(SKILLS_DIR)/test-protocol \
 	checker $(SKILLS_DIR)/checker \
 	text-edit $(SKILLS_DIR)/text-edit \
 	git-workflow $(SKILLS_DIR)/git-workflow \
