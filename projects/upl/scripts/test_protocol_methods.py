@@ -59,6 +59,7 @@ class ScenarioResult:
     preparation: tuple[StepResult, ...]
     cleanup: tuple[StepResult, ...]
     error: str | None
+    skipped: bool = False
 
     @property
     def passed(self) -> bool:
@@ -415,7 +416,7 @@ def _body_sha(body: bytes) -> str | None:
 
 
 def print_result(result: ScenarioResult) -> None:
-    outcome = "PASS" if result.passed else "FAIL"
+    outcome = "SKIP" if result.skipped else ("PASS" if result.passed else "FAIL")
     print(
         f"RESULT {outcome} {result.scenario_id}: {result.method} {result.path} role={result.role}"
     )
@@ -453,9 +454,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.plan_only:
             return 0
         roles = _scenario_roles(scenarios)
-        user_ids = resolve_user_ids(roles, db_url_env=args.db_url_env, timeout=args.timeout)
+        user_ids, missing_roles = resolve_user_ids(
+            roles, db_url_env=args.db_url_env, timeout=args.timeout
+        )
+        for role in sorted(missing_roles):
+            print(f"SKIPPED role={role} (no active Dev DB user)")
         sessions = create_sessions(
-            roles,
             user_ids,
             base_url=base_url,
             timeout=args.timeout,
@@ -466,15 +470,28 @@ def main(argv: list[str] | None = None) -> int:
 
     results = []
     for scenario in scenarios:
-        result = run_scenario(
-            scenario,
-            base_url=base_url,
-            sessions=sessions,
-            timeout=args.timeout,
-        )
+        if _scenario_roles([scenario]) & missing_roles:
+            result = ScenarioResult(
+                scenario_id=scenario["id"],
+                role=scenario["role"],
+                method=scenario["method"].upper(),
+                path=scenario["path"],
+                target=None,
+                preparation=(),
+                cleanup=(),
+                error=None,
+                skipped=True,
+            )
+        else:
+            result = run_scenario(
+                scenario,
+                base_url=base_url,
+                sessions=sessions,
+                timeout=args.timeout,
+            )
         results.append(result)
         print_result(result)
-    return 0 if all(result.passed for result in results) else 1
+    return 0 if all(result.passed or result.skipped for result in results) else 1
 
 
 if __name__ == "__main__":

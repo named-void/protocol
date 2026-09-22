@@ -144,8 +144,8 @@ def resolve_user_ids(
     *,
     db_url_env: str = "UPL_DEV_DATABASE_URL",
     timeout: float = 30.0,
-) -> dict[str, str]:
-    """Resolve exactly one active user per role from the configured Dev DB."""
+) -> tuple[dict[str, str], set[str]]:
+    """Resolve one active user per role; return resolved users and roles with no active user."""
 
     if not roles:
         raise AuthError("No roles supplied")
@@ -164,6 +164,7 @@ def resolve_user_ids(
 
     environment = _postgres_environment(db_url)
     result: dict[str, str] = {}
+    missing: set[str] = set()
     for role in sorted(roles):
         try:
             completed = subprocess.run(
@@ -189,12 +190,15 @@ def resolve_user_ids(
         if completed.returncode != 0:
             raise AuthError(f"Could not query the Dev DB for role {role}")
         user_ids = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-        if len(user_ids) != 1:
+        if len(user_ids) > 1:
             raise AuthError(
                 f"Role {role} must resolve to exactly one active Dev DB user; found {len(user_ids)}"
             )
+        if not user_ids:
+            missing.add(role)
+            continue
         result[role] = user_ids[0]
-    return result
+    return result, missing
 
 
 def _has_pg_environment() -> bool:
@@ -231,17 +235,16 @@ def _join_url(base_url: str, path: str) -> str:
 
 
 def create_sessions(
-    roles: set[str],
     user_ids: dict[str, str],
     *,
     base_url: str,
     timeout: float = 30.0,
 ) -> dict[str, DevSession]:
-    """Authenticate each role in an isolated in-memory cookie jar."""
+    """Authenticate each resolved role in an isolated in-memory cookie jar."""
 
     return {
-        role: DevSession(role, user_ids[role], base_url, timeout)
-        for role in sorted(roles)
+        role: DevSession(role, user_id, base_url, timeout)
+        for role, user_id in sorted(user_ids.items())
     }
 
 
@@ -257,12 +260,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         roles = set(args.roles)
-        user_ids = resolve_user_ids(roles, db_url_env=args.db_url_env, timeout=args.timeout)
-        create_sessions(roles, user_ids, base_url=args.base_url, timeout=args.timeout)
+        user_ids, missing_roles = resolve_user_ids(
+            roles, db_url_env=args.db_url_env, timeout=args.timeout
+        )
+        create_sessions(user_ids, base_url=args.base_url, timeout=args.timeout)
     except AuthError as error:
         print(f"test_protocol_auth: {error}", file=sys.stderr)
         return 2
-    for role in sorted(roles):
+    for role in sorted(missing_roles):
+        print(f"skipped: {role} (no active Dev DB user)")
+    for role in sorted(user_ids):
         print(f"authenticated: {role}")
     return 0
 
