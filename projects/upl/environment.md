@@ -20,7 +20,7 @@
 
   ```json
   {
-    "user_id": "<user_id из dev БД>",
+    "user_id": "<user_id из БД UPL-сервиса>",
     "auth_type": "cookie"
   }
   ```

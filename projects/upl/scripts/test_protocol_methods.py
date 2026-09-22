@@ -97,6 +97,10 @@ def _validate_scenario(scenario: Any) -> None:
     cleanup = scenario.get("cleanup", [])
     if not isinstance(preparation, list) or not isinstance(cleanup, list):
         raise ScenarioError(f"Scenario {scenario['id']} prepare/cleanup must be arrays")
+    for index, request in enumerate(preparation):
+        _validate_request(request, f"scenario {scenario['id']} prepare[{index}]")
+    for index, request in enumerate(cleanup):
+        _validate_request(request, f"scenario {scenario['id']} cleanup[{index}]")
     mutation = _request_is_mutating(scenario) or any(
         _request_is_mutating(request) for request in preparation + cleanup
     )
@@ -126,10 +130,6 @@ def _validate_scenario(scenario: Any) -> None:
         raise ScenarioError(
             f"DELETE scenario {scenario['id']} must create a fixture with POST first"
         )
-    for index, request in enumerate(preparation):
-        _validate_request(request, f"scenario {scenario['id']} prepare[{index}]")
-    for index, request in enumerate(cleanup):
-        _validate_request(request, f"scenario {scenario['id']} cleanup[{index}]")
 
 
 def _validate_request(request: Any, label: str) -> None:
