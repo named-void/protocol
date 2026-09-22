@@ -21,8 +21,10 @@ description: 'Триггер: точное сообщение `test-protocol UPL
 ```
 
 Для `PUT`/`PATCH` добавь `prepare` с `GET` и `save_as`, `json_from` с минимальным `json_patch` и cleanup с восстановлением; для `DELETE` — `prepare` с `POST` уникального fixture, capture его id и cleanup.
-4. Покажи план и запусти: `python3 <UPL_ROOT>/scripts/test_protocol_methods.py --manifest <manifest> --phase required --plan-only`, затем то же без `--plan-only`. Пользователей ролей и cookie-сессии на `UPL_DEV_BASE_URL` разрешает `test_protocol_auth.py` (активный пользователь роли из service DB: `users.role_code`, `deleted_at IS NULL`; auth-service не читается); нет пользователя роли — ячейки `SKIP`, прогон продолжается.
+4. Покажи план и запусти: `python3 <UPL_ROOT>/scripts/test_protocol_methods.py --manifest <manifest> --phase required --plan-only`, затем то же без `--plan-only`. Пользователей ролей и cookie-сессии на `UPL_DEV_BASE_URL` разрешает `test_protocol_auth.py` (активный пользователь роли из service DB: `users.role_code`, `deleted_at IS NULL`); нет пользователя роли — ячейки `SKIP`, прогон продолжается.
 5. Выдай результат по каждой ячейке: ожидалось, получено, `PASS/FAIL/SKIP`, статусы prepare/cleanup. Критерий — только HTTP-статус целевого вызова; cookie, токены и `user_id` не выводи.
 6. Все `required`-ячейки `PASS` или `SKIP` — спроси согласие на `extended` (остальные роли этих же методов; отдельный запуск с `--phase extended`, незапущенные extended-ячейки в итог `required` не включай); при отказе итог `required passed; extended not run`. При любом `FAIL` вопрос не задавай.
 
 Границы: Dev БД — только read-only `SELECT`; изменяющие запросы — только сценарии manifest с уникальным fixture или восстановлением и обязательным cleanup; неописуемый сценарий — блокировка ячейки до запросов.
+
+Auth-диагностика: при одновременном `FAIL` основной проверки ячейки и противоречии полученного статуса с постановкой задачи разрешён read-only `SELECT` permissions конкретных ролей из БД auth на том же postgres-сервере; подтверждённое принципиальное разрешение или запрет контура для сбойной пары укажи в результате как наиболее вероятную причину.
