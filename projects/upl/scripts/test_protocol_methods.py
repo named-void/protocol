@@ -393,9 +393,12 @@ def _capture_value(captures: dict[str, dict[str, Any]], name: str, path: str) ->
     value: Any = captures[name]
     if path:
         for part in path.split("."):
-            if not isinstance(value, dict) or part not in value:
+            if isinstance(value, list) and part.isdecimal() and int(part) < len(value):
+                value = value[int(part)]
+            elif isinstance(value, dict) and part in value:
+                value = value[part]
+            else:
                 raise ScenarioError(f"Capture {name} has no path {path}")
-            value = value[part]
     return value
 
 
