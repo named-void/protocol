@@ -240,6 +240,14 @@ class TestProtocolRunnerTest(unittest.TestCase):
         self.assertEqual(0, code, output)
         self.assertIn("PLAN phase=required scenarios=1", output)
 
+    def test_capture_value_supports_list_index(self) -> None:
+        captures = {"cap": {"json": {"data": [{"id": 42}], "0": "zero"}}}
+
+        self.assertEqual(42, self.methods._capture_value(captures, "cap", "json.data.0.id"))
+        self.assertEqual("zero", self.methods._capture_value(captures, "cap", "json.0"))
+        with self.assertRaises(self.methods.ScenarioError):
+            self.methods._capture_value(captures, "cap", "json.data.3.id")
+
 
 if __name__ == "__main__":
     unittest.main()
