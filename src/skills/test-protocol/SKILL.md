@@ -20,7 +20,7 @@ description: 'Триггер: точное сообщение `test-protocol UPL
 }
 ```
 
-Для `PUT`/`PATCH` добавь `prepare` с `GET` и `save_as`, `json_from` с минимальным `json_patch` и cleanup с восстановлением; для `DELETE` — `prepare` с `POST` уникального fixture, capture его id и cleanup.
+Для `PUT`/`PATCH` добавь `prepare` с `GET` и `save_as`, `json_from` с минимальным `json_patch` и cleanup с восстановлением; для `DELETE` — `prepare` с `POST` уникального fixture, capture его id и cleanup. Cleanup-`DELETE` обязан ссылаться на захваченный идентификатор этого прогона в пути или query (`{имя.пути}` либо `$capture`); удаления по role/status/датам или захардкоженному id запрещены, restore-`PUT`/`PATCH` cleanup этого ограничения не имеет.
 4. Покажи план и запусти: `python3 "$PROTO/../projects/upl/scripts/test_protocol_methods.py" --manifest <manifest> --phase required --plan-only`, затем то же без `--plan-only`. Пользователей ролей и cookie-сессии на `UPL_DEV_BASE_URL` разрешает `test_protocol_auth.py` (активный пользователь роли из service DB: `users.role_code`, `deleted_at IS NULL`); нет пользователя роли — ячейки `SKIP`, прогон продолжается.
 5. Выдай результат по каждой ячейке: ожидалось, получено, `PASS/FAIL/SKIP`, статусы prepare/cleanup. Критерий — только HTTP-статус целевого вызова; cookie, токены и `user_id` не выводи.
 6. Все `required`-ячейки `PASS` или `SKIP` — спроси согласие на `extended` (остальные роли этих же методов; отдельный запуск с `--phase extended`, незапущенные extended-ячейки в итог `required` не включай); при отказе итог `required passed; extended not run`. При любом `FAIL` вопрос не задавай.

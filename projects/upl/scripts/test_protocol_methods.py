@@ -26,6 +26,7 @@ from test_protocol_auth import (
 
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 REFERENCE_PATTERN = re.compile(r"\{([^{}]+)\}")
+TEMPLATE_PATTERN = re.compile(r"\{\{[^{}]*\}\}")
 RUN_ID_PATTERN = re.compile(r"\$\{run_id\}")
 
 
@@ -102,6 +103,15 @@ def _validate_scenario(scenario: Any) -> None:
         _validate_request(request, f"scenario {scenario['id']} prepare[{index}]")
     for index, request in enumerate(cleanup):
         _validate_request(request, f"scenario {scenario['id']} cleanup[{index}]")
+        if (
+            str(request.get("method", "")).upper() == "DELETE"
+            and not _request_references_capture(request)
+        ):
+            raise ScenarioError(
+                f"DELETE cleanup[{index}] of scenario {scenario['id']} must reference a "
+                "captured record of this run in path or query; broad deletions "
+                "are not allowed"
+            )
     mutation = _request_is_mutating(scenario) or any(
         _request_is_mutating(request) for request in preparation + cleanup
     )
@@ -159,6 +169,24 @@ def _validate_request(request: Any, label: str) -> None:
 
 def _request_is_mutating(request: dict[str, Any]) -> bool:
     return str(request.get("method", "")).upper() not in SAFE_METHODS
+
+
+def _request_references_capture(request: dict[str, Any]) -> bool:
+    """True when path or query identifies the target via a capture of this run."""
+    def scan(value: Any) -> bool:
+        if isinstance(value, str):
+            value = RUN_ID_PATTERN.sub("", value)
+            value = TEMPLATE_PATTERN.sub("", value)
+            return REFERENCE_PATTERN.search(value) is not None
+        if isinstance(value, dict):
+            if "$capture" in value:
+                return True
+            return any(scan(item) for item in value.values())
+        if isinstance(value, list):
+            return any(scan(item) for item in value)
+        return False
+
+    return scan(request.get("path", "")) or scan(request.get("query", {}))
 
 
 def _scenario_roles(scenarios: list[dict[str, Any]]) -> set[str]:

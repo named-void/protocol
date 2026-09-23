@@ -150,6 +150,26 @@ class TestProtocolRunnerTest(unittest.TestCase):
             "expected_status": [200],
         }
 
+    @staticmethod
+    def delete_scenario(cleanup: list[dict]) -> dict:
+        return {
+            "id": "s-del",
+            "role": "alpha",
+            "method": "DELETE",
+            "path": "/api/v1/b/{fix.json.id}",
+            "expected_status": [204],
+            "prepare": [
+                {
+                    "method": "POST",
+                    "path": "/api/v1/b",
+                    "expected_status": [201],
+                    "json": {"name": "qa-${run_id}"},
+                    "save_as": "fix",
+                }
+            ],
+            "cleanup": cleanup,
+        }
+
     def test_runner_skips_cell_without_active_user(self) -> None:
         self.write_manifest(
             [
@@ -247,6 +267,91 @@ class TestProtocolRunnerTest(unittest.TestCase):
         self.assertEqual("zero", self.methods._capture_value(captures, "cap", "json.0"))
         with self.assertRaises(self.methods.ScenarioError):
             self.methods._capture_value(captures, "cap", "json.data.3.id")
+
+    def write_and_load(self, scenarios: list[dict]):
+        self.write_manifest(scenarios)
+        return self.methods.load_manifest(self.manifest, "required")
+
+    def test_delete_cleanup_without_capture_is_rejected(self) -> None:
+        scenarios = [
+            self.delete_scenario(
+                [{"method": "DELETE", "path": "/api/v1/b/42", "expected_status": [204]}]
+            )
+        ]
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load(scenarios)
+
+        self.assertIn("captured record", str(raised.exception))
+
+    def test_delete_cleanup_with_template_placeholder_is_rejected(self) -> None:
+        scenarios = [
+            self.delete_scenario(
+                [
+                    {
+                        "method": "DELETE",
+                        "path": "/api/v1/b/{{fixture_id}}",
+                        "expected_status": [204],
+                    }
+                ]
+            )
+        ]
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load(scenarios)
+
+        self.assertIn("captured record", str(raised.exception))
+
+    def test_delete_cleanup_capture_positions_are_accepted(self) -> None:
+        by_path = self.delete_scenario(
+            [{"method": "DELETE", "path": "/api/v1/b/{fix.json.id}", "expected_status": [204]}]
+        )
+        by_query = self.delete_scenario(
+            [
+                {
+                    "method": "DELETE",
+                    "path": "/api/v1/b",
+                    "query": {"ref": "{fix.json.id}"},
+                    "expected_status": [204],
+                }
+            ]
+        )
+
+        for scenario in (by_path, by_query):
+            loaded, _ = self.write_and_load([scenario])
+            self.assertEqual([scenario], loaded["required"])
+
+    def test_delete_cleanup_capture_in_body_is_rejected(self) -> None:
+        scenarios = [
+            self.delete_scenario(
+                [
+                    {
+                        "method": "DELETE",
+                        "path": "/api/v1/b",
+                        "json": {"comment": "{fix.json.id}"},
+                        "expected_status": [204],
+                    }
+                ]
+            )
+        ]
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load(scenarios)
+
+        self.assertIn("captured record", str(raised.exception))
+
+    def test_restore_cleanup_without_capture_stays_allowed(self) -> None:
+        scenarios = [
+            self.delete_scenario(
+                [
+                    {
+                        "method": "PUT",
+                        "path": "/api/v1/b/42",
+                        "expected_status": [200],
+                        "json_from": {"capture": "fix"},
+                    }
+                ]
+            )
+        ]
+
+        self.write_and_load(scenarios)
 
 
 if __name__ == "__main__":
