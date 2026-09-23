@@ -114,14 +114,21 @@ def _validate_scenario(scenario: Any) -> None:
                 f"scenario {scenario['id']} cleanup[{index}] prerequisite is only allowed "
                 "on prepare steps"
             )
-        if (
-            str(request.get("method", "")).upper() == "DELETE"
-            and not _request_references_capture(request)
-        ):
+        if str(request.get("method", "")).upper() != "DELETE":
+            continue
+        names = _capture_names(request)
+        if not names:
             raise ScenarioError(
                 f"DELETE cleanup[{index}] of scenario {scenario['id']} must reference a "
                 "captured record of this run in path or query; broad deletions "
                 "are not allowed"
+            )
+        unknown = sorted(names - _created_capture_names(preparation))
+        if unknown:
+            raise ScenarioError(
+                f"DELETE cleanup[{index}] of scenario {scenario['id']} must delete a "
+                "record created by this scenario's prepare; capture is unknown or "
+                f"not created by POST prepare: {', '.join(unknown)}"
             )
     mutation = _request_is_mutating(scenario) or any(
         _request_is_mutating(request) for request in preparation + cleanup
@@ -191,22 +198,38 @@ def _validate_prerequisite(request: dict[str, Any], label: str) -> None:
         raise ScenarioError(f"{label} prerequisite must be a read-only lookup")
 
 
-def _request_references_capture(request: dict[str, Any]) -> bool:
-    """True when path or query identifies the target via a capture of this run."""
-    def scan(value: Any) -> bool:
+def _capture_names(request: dict[str, Any]) -> set[str]:
+    """Capture names referenced in path or query (``{name...}``/``$capture``)."""
+    names: set[str] = set()
+
+    def scan(value: Any) -> None:
         if isinstance(value, str):
             value = RUN_ID_PATTERN.sub("", value)
             value = TEMPLATE_PATTERN.sub("", value)
-            return REFERENCE_PATTERN.search(value) is not None
-        if isinstance(value, dict):
-            if "$capture" in value:
-                return True
-            return any(scan(item) for item in value.values())
-        if isinstance(value, list):
-            return any(scan(item) for item in value)
-        return False
+            for match in REFERENCE_PATTERN.finditer(value):
+                names.add(match.group(1).split(".")[0])
+        elif isinstance(value, dict):
+            if isinstance(value.get("$capture"), str):
+                names.add(value["$capture"])
+            for item in value.values():
+                scan(item)
+        elif isinstance(value, list):
+            for item in value:
+                scan(item)
 
-    return scan(request.get("path", "")) or scan(request.get("query", {}))
+    scan(request.get("path", ""))
+    scan(request.get("query", {}))
+    return names
+
+
+def _created_capture_names(preparation: list[dict[str, Any]]) -> set[str]:
+    """Names whose last prepare writer is a creating (POST) step."""
+    provenance: dict[str, bool] = {}
+    for request in preparation:
+        name = request.get("save_as")
+        if isinstance(name, str):
+            provenance[name] = request.get("method", "").upper() == "POST"
+    return {name for name, created in provenance.items() if created}
 
 
 def _scenario_roles(scenarios: list[dict[str, Any]]) -> set[str]:

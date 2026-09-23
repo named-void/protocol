@@ -337,6 +337,40 @@ class TestProtocolRunnerTest(unittest.TestCase):
 
         self.assertIn("captured record", str(raised.exception))
 
+    def test_delete_cleanup_rejects_overwritten_capture(self) -> None:
+        scenario = self.delete_scenario(
+            [{"method": "DELETE", "path": "/api/v1/b/{fix.json.id}", "expected_status": [204]}]
+        )
+        scenario["prepare"].append(
+            {
+                "method": "GET",
+                "path": "/api/v1/b/42",
+                "expected_status": [200],
+                "save_as": "fix",
+            }
+        )
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load([scenario])
+
+        self.assertIn("created by this scenario's prepare", str(raised.exception))
+
+    def test_delete_cleanup_from_get_capture_is_rejected(self) -> None:
+        scenario = self.delete_scenario(
+            [{"method": "DELETE", "path": "/api/v1/b/{ext.json.id}", "expected_status": [204]}]
+        )
+        scenario["prepare"] = [
+            {
+                "method": "GET",
+                "path": "/api/v1/b/42",
+                "expected_status": [200],
+                "save_as": "ext",
+            }
+        ]
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load([scenario])
+
+        self.assertIn("created by this scenario's prepare", str(raised.exception))
+
     def test_restore_cleanup_without_capture_stays_allowed(self) -> None:
         scenarios = [
             self.delete_scenario(
