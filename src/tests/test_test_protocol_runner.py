@@ -353,6 +353,119 @@ class TestProtocolRunnerTest(unittest.TestCase):
 
         self.write_and_load(scenarios)
 
+    def step(self, label: str, status: int):
+        return self.methods.StepResult(
+            label=label,
+            role="alpha",
+            method="GET",
+            path="/api/v1/b",
+            status=status,
+            expected=(200,),
+            body_sha256=None,
+            body_size=0,
+        )
+
+    @staticmethod
+    def prerequisite_scenario() -> dict:
+        return {
+            "id": "s-block",
+            "role": "alpha",
+            "method": "GET",
+            "path": "/api/v1/b/{lookup.json.id}",
+            "expected_status": [200],
+            "prepare": [
+                {
+                    "method": "GET",
+                    "path": "/api/v1/b?ref=qa",
+                    "expected_status": [200],
+                    "prerequisite": True,
+                    "save_as": "lookup",
+                }
+            ],
+        }
+
+    def test_prerequisite_prepare_lookup_passes_validation(self) -> None:
+        self.write_and_load([self.prerequisite_scenario()])
+
+    def test_prerequisite_rejected_outside_prepare(self) -> None:
+        on_target = self.prerequisite_scenario()
+        on_target["prerequisite"] = True
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load([on_target])
+
+        self.assertIn("only allowed on prepare", str(raised.exception))
+
+        on_cleanup = self.prerequisite_scenario()
+        on_cleanup["cleanup"] = [
+            {"method": "DELETE", "path": "/api/v1/b", "expected_status": [204], "prerequisite": True}
+        ]
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load([on_cleanup])
+
+        self.assertIn("only allowed on prepare", str(raised.exception))
+
+    def test_prerequisite_must_be_true_read_only(self) -> None:
+        scenario = self.prerequisite_scenario()
+        scenario["prepare"][0]["prerequisite"] = False
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load([scenario])
+
+        self.assertIn("prerequisite must be true", str(raised.exception))
+
+        mutating = self.prerequisite_scenario()
+        mutating["prepare"][0].update({"method": "POST", "prerequisite": True})
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load([mutating])
+
+        self.assertIn("read-only lookup", str(raised.exception))
+
+    def test_prerequisite_404_marks_scenario_blocked(self) -> None:
+        scenario = self.prerequisite_scenario()
+        with mock.patch.object(
+            self.methods, "run_request", side_effect=[self.step("prepare[0]", 404)]
+        ):
+            result = self.methods.run_scenario(
+                scenario, base_url="https://dev.test", sessions={"alpha": object()}, timeout=5
+            )
+
+        self.assertTrue(result.blocked)
+        self.assertIn("prerequisite record absent", result.error)
+        self.assertIsNone(result.target)
+
+    def test_plain_prepare_404_stays_fail(self) -> None:
+        scenario = self.prerequisite_scenario()
+        del scenario["prepare"][0]["prerequisite"]
+        with mock.patch.object(
+            self.methods, "run_request", side_effect=[self.step("prepare[0]", 404)]
+        ):
+            result = self.methods.run_scenario(
+                scenario, base_url="https://dev.test", sessions={"alpha": object()}, timeout=5
+            )
+
+        self.assertFalse(result.blocked)
+        self.assertIn("preparation failed", result.error)
+
+    def test_blocked_cell_fails_phase(self) -> None:
+        self.write_manifest([self.read_only_scenario("s-alpha", "alpha", "/a")])
+
+        def blocked(scenario, **kwargs):
+            return self.methods.ScenarioResult(
+                scenario_id=scenario["id"],
+                role=scenario["role"],
+                method=scenario["method"].upper(),
+                path=scenario["path"],
+                target=None,
+                preparation=(),
+                cleanup=(),
+                error="prerequisite record absent at prepare[0]",
+                blocked=True,
+            )
+
+        code, output = self.run_runner(self.environment(alpha="111"), run_scenario=blocked)
+
+        self.assertEqual(1, code, output)
+        self.assertIn("RESULT BLOCKED s-alpha", output)
+
 
 if __name__ == "__main__":
     unittest.main()

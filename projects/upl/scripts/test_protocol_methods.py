@@ -61,6 +61,7 @@ class ScenarioResult:
     cleanup: tuple[StepResult, ...]
     error: str | None
     skipped: bool = False
+    blocked: bool = False
 
     @property
     def passed(self) -> bool:
@@ -101,8 +102,18 @@ def _validate_scenario(scenario: Any) -> None:
         raise ScenarioError(f"Scenario {scenario['id']} prepare/cleanup must be arrays")
     for index, request in enumerate(preparation):
         _validate_request(request, f"scenario {scenario['id']} prepare[{index}]")
+        _validate_prerequisite(request, f"scenario {scenario['id']} prepare[{index}]")
+    if "prerequisite" in scenario:
+        raise ScenarioError(
+            f"scenario {scenario['id']} prerequisite is only allowed on prepare steps"
+        )
     for index, request in enumerate(cleanup):
         _validate_request(request, f"scenario {scenario['id']} cleanup[{index}]")
+        if "prerequisite" in request:
+            raise ScenarioError(
+                f"scenario {scenario['id']} cleanup[{index}] prerequisite is only allowed "
+                "on prepare steps"
+            )
         if (
             str(request.get("method", "")).upper() == "DELETE"
             and not _request_references_capture(request)
@@ -169,6 +180,15 @@ def _validate_request(request: Any, label: str) -> None:
 
 def _request_is_mutating(request: dict[str, Any]) -> bool:
     return str(request.get("method", "")).upper() not in SAFE_METHODS
+
+
+def _validate_prerequisite(request: dict[str, Any], label: str) -> None:
+    if "prerequisite" not in request:
+        return
+    if request["prerequisite"] is not True:
+        raise ScenarioError(f"{label} prerequisite must be true")
+    if _request_is_mutating(request):
+        raise ScenarioError(f"{label} prerequisite must be a read-only lookup")
 
 
 def _request_references_capture(request: dict[str, Any]) -> bool:
@@ -241,6 +261,7 @@ def run_scenario(
     cleanup: list[StepResult] = []
     target: StepResult | None = None
     error: str | None = None
+    blocked = False
     run_id = uuid.uuid4().hex[:12]
 
     try:
@@ -257,7 +278,11 @@ def run_scenario(
             )
             preparation.append(step)
             if not step.passed:
-                error = f"preparation failed at {step.label}"
+                if request.get("prerequisite") is True and step.status == 404:
+                    blocked = True
+                    error = f"prerequisite record absent at {step.label}"
+                else:
+                    error = f"preparation failed at {step.label}"
                 break
         if error is None:
             target = run_request(
@@ -299,6 +324,7 @@ def run_scenario(
         preparation=tuple(preparation),
         cleanup=tuple(cleanup),
         error=error,
+        blocked=blocked,
     )
 
 
@@ -447,7 +473,9 @@ def _body_sha(body: bytes) -> str | None:
 
 
 def print_result(result: ScenarioResult) -> None:
-    outcome = "SKIP" if result.skipped else ("PASS" if result.passed else "FAIL")
+    outcome = "SKIP" if result.skipped else (
+        "BLOCKED" if result.blocked else ("PASS" if result.passed else "FAIL")
+    )
     print(
         f"RESULT {outcome} {result.scenario_id}: {result.method} {result.path} role={result.role}"
     )
