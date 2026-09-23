@@ -354,6 +354,34 @@ class TestProtocolRunnerTest(unittest.TestCase):
 
         self.assertIn("created by this scenario's prepare", str(raised.exception))
 
+    def test_delete_target_with_static_path_is_rejected(self) -> None:
+        scenario = self.delete_scenario(
+            [{"method": "DELETE", "path": "/api/v1/b/{fix.json.id}", "expected_status": [204]}]
+        )
+        scenario["path"] = "/api/v1/b/42"
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load([scenario])
+
+        self.assertIn("DELETE target", str(raised.exception))
+
+    def test_delete_target_with_foreign_capture_is_rejected(self) -> None:
+        scenario = self.delete_scenario(
+            [{"method": "DELETE", "path": "/api/v1/b/{fix.json.id}", "expected_status": [204]}]
+        )
+        scenario["prepare"].append(
+            {
+                "method": "GET",
+                "path": "/api/v1/b/42",
+                "expected_status": [200],
+                "save_as": "ext",
+            }
+        )
+        scenario["path"] = "/api/v1/b/{ext.json.id}"
+        with self.assertRaises(self.methods.ScenarioError) as raised:
+            self.write_and_load([scenario])
+
+        self.assertIn("created by this scenario's prepare", str(raised.exception))
+
     def test_delete_cleanup_from_get_capture_is_rejected(self) -> None:
         scenario = self.delete_scenario(
             [{"method": "DELETE", "path": "/api/v1/b/{ext.json.id}", "expected_status": [204]}]

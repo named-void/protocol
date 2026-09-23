@@ -153,12 +153,26 @@ def _validate_scenario(scenario: Any) -> None:
             raise ScenarioError(
                 f"{target_method} scenario {scenario['id']} must restore the captured body"
             )
-    if target_method == "DELETE" and not any(
-        request.get("method", "").upper() == "POST" for request in preparation
-    ):
-        raise ScenarioError(
-            f"DELETE scenario {scenario['id']} must create a fixture with POST first"
-        )
+    if target_method == "DELETE":
+        if not any(
+            request.get("method", "").upper() == "POST" for request in preparation
+        ):
+            raise ScenarioError(
+                f"DELETE scenario {scenario['id']} must create a fixture with POST first"
+            )
+        names = _capture_names(scenario)
+        if not names:
+            raise ScenarioError(
+                f"DELETE target of scenario {scenario['id']} must reference a captured "
+                "record of this run in path or query; broad deletions are not allowed"
+            )
+        unknown = sorted(names - _created_capture_names(preparation))
+        if unknown:
+            raise ScenarioError(
+                f"DELETE target of scenario {scenario['id']} must delete a record "
+                "created by this scenario's prepare; capture is unknown or not "
+                f"created by POST prepare: {', '.join(unknown)}"
+            )
 
 
 def _validate_request(request: Any, label: str) -> None:
