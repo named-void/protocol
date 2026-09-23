@@ -72,6 +72,7 @@ DROP TABLE IF EXISTS temp_permissions;
 PERMISSION_VALUES = """\
 INSERT INTO permission (id, action, name, description, domain, is_active, is_regex, is_public, path_pattern)
 VALUES
+('33333333-3333-3333-3333-333333333333', 'delete', 'Рекламодатели - Удаление', NULL, 'vendors', true, false, false, NULL),
 ('11111111-1111-1111-1111-111111111111', 'read', 'Краткий список', NULL, 'vendors-slim', true, false, false, NULL),
 (gen_random_uuid(), 'update', 'Восстановление', NULL, 'vendors-restore', true, false, false, NULL),
 ('22222222-2222-2222-2222-222222222222', 'update', 'Архив рекламодателей', NULL, 'vendors-archive', true, false, false, NULL)
@@ -227,6 +228,24 @@ class BuildPermMatrixTest(unittest.TestCase):
         self.assertEqual(0, self.run_build(force=True))
         matrix = json.loads(self.out.read_text(encoding="utf-8"))
         self.assertEqual("000005_renames.up.sql", matrix["last_migration"])
+
+    def test_grant_on_unknown_permission_fails_loudly(self) -> None:
+        (self.migrations / "000006_phantom.up.sql").write_text(
+            "INSERT INTO role_permission (permission_id, role_code)\n"
+            "SELECT p.id, grants.role_code\n"
+            "FROM permission p\n"
+            "JOIN (\n"
+            "    VALUES ('vendors-ghost', 'read', 'super_admin')\n"
+            ") AS grants(domain, action, role_code)\n"
+            "    ON grants.domain = p.domain AND grants.action = p.action;\n",
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = self.module.build(self.migrations, self.out, force=True)
+
+        self.assertEqual(2, code)
+        self.assertIn("unknown permission", stderr.getvalue())
 
     def test_unhandled_statement_fails_loudly(self) -> None:
         (self.migrations / "000006_future.up.sql").write_text(

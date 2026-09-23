@@ -138,6 +138,10 @@ class Replay:
     temp_rows: list[tuple[str, str, str, str]] = field(default_factory=list)
 
     def grant(self, key: tuple[str, str], role: str) -> None:
+        if key not in self.permissions:
+            raise MigrationError(
+                f"Grant references unknown permission {key[0]}:{key[1]}"
+            )
         self.grants.setdefault(key, set()).add(role)
 
     def revoke(self, key: tuple[str, str], role: str) -> None:
