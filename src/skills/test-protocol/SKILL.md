@@ -7,11 +7,16 @@ description: 'Триггер: точное сообщение `test-protocol UPL
 
 Команда не открывает цикл доработки и не разрешает изменения кода, Jira, Git, Wiki и `state.md`.
 
-1. Разреши `PROTO` от физического расположения skill (симлинк каталога навыка checkout не даёт): `PROTO="$(dirname "$(realpath '<путь загруженного test-protocol/SKILL.md>')")/../.."` — каталог `src` репозитория протокола. Проверь `test -r` для `$PROTO/skills/protocol/scripts/resolve_issue.py` и `$PROTO/lib/skills_config.py`, отсутствие — блокер. Запусти `python3 "$PROTO/skills/protocol/scripts/resolve_issue.py" <UPL-code>`, сохрани `KEY` и `project_roots`.
+1. Разреши `PROTO` от физического расположения skill (симлинк каталога навыка checkout не даёт): `PROTO="$(dirname "$(realpath '<путь загруженного test-protocol/SKILL.md>')")/../.."` — каталог `src` репозитория протокола.
+   Проверь `test -r` для `$PROTO/skills/protocol/scripts/resolve_issue.py` и `$PROTO/lib/skills_config.py`, отсутствие — блокер.
+   Запусти `python3 "$PROTO/skills/protocol/scripts/resolve_issue.py" <UPL-code>`, сохрани `KEY` и `project_roots`.
    `DATA_ROOT` получи только с контекстом проекта — `cd <project_roots[0]> && python3 "$PROTO/lib/skills_config.py" data-root` либо `AGENTS_PROJECT=<проект> python3 "$PROTO/lib/skills_config.py" data-root`; аргументы команда игнорирует, а без контекста молча возвращает `projects/_common/.data`, где state задачи нет.
-2. Прочитай единственный `<DATA_ROOT>/tasks/<KEY>/state.md` (`TASK_DIR`) и `$PROTO/../projects/upl/environment.md`. Если `state.md` отсутствует, перепроверь контекст `DATA_ROOT` из шага 1; блокируй только после повторной проверки. Продолжай только при `status: completed`, заполненных `candidate` и `checked_candidate`, принятом результате и обязательных evidence, иначе — блокер.
+2. Прочитай единственный `<DATA_ROOT>/tasks/<KEY>/state.md` (`TASK_DIR`) и `$PROTO/../projects/upl/environment.md`.
+   Если `state.md` отсутствует, перепроверь контекст `DATA_ROOT` из шага 1; блокируй только после повторной проверки.
+   Продолжай только при `status: completed`, заполненных `candidate` и `checked_candidate`, принятом результате и обязательных evidence, иначе — блокер.
    Ячейки — пары «метод × роль», где задача изменила и метод, и доступ роли; ожидаемый HTTP-статус бери из требований задачи с их координатой (требования приоритетнее общей документации, конфликт источников — блокер). Неоднозначные роли или статус — блокер.
-   Обнови кэш матрицы прав: `python3 "$PROTO/../projects/upl/scripts/build_perm_matrix.py" --migrations "<корень UPL из projects/upl/project.toml>/services/auth-service/migrations" --out "<DATA_ROOT>/upl/perm-matrix.json"` — пересборка только при миграциях новее сохранённых, неразобранный стейтмент — блокер. Матрица «domain × action → роли» — источник фактических составов ролей домена для manifest.
+   Обнови кэш матрицы прав: `python3 "$PROTO/../projects/upl/scripts/build_perm_matrix.py" --migrations "<корень UPL из projects/upl/project.toml>/services/auth-service/migrations" --out "<DATA_ROOT>/upl/perm-matrix.json"` — пересборка только при миграциях новее сохранённых, неразобранный стейтмент — блокер.
+   Матрица «domain × action → роли» — источник фактических составов ролей домена для manifest.
 3. Подготовь manifest на каждый метод в `<TASK_DIR>/test-protocol/methods/`; одна ячейка — один сценарий:
 
 ```json
@@ -29,14 +34,16 @@ description: 'Триггер: точное сообщение `test-protocol UPL
 Цель ячейки контурной роли (привязанной к контуру сессии, например `advertiser_account_manager`) выбирай внутри контура сессии: Auth подставляет `X-ADVERTISER-IDS` из контура сессии, и если в нём нет валидного кандидата, положительная ячейка невоспроизводима — цели вне контура дают `403`, а клиентский заголовок шлюз перезаписывает.
 Кандидата в контуре нет — ожидание из требований не меняй: положительная ячейка фиксирует FAIL с auth-диагностикой; запрет вне контура проверяй отдельной ячейкой, если она нужна по задаче.
 Резолвь цели непосредственно перед каждым прогоном: состав активных админов вендора на Develop дрейфует, а валидация `422` блокирует создание fixture в партнёр без активного админа вендора.
-Кандидата цели разрешай версионированным хелпером `python3 "$PROTO/../projects/upl/scripts/resolve_targets.py"`: параметры `--target-role <роль>`, `--partner-kind vendors|publishers`, `--in-contour <роль сессии>`, по умолчанию требуется единственная активная привязка (`--any-binding` отменяет), опционально `--is-contact` и `--exclude <user_id>`; найденная цель печатается строкой JSON `{"user_id", "partner_id"}`, отсутствие кандидата — код `1`.
+Кандидата цели разрешай версионированным хелпером `python3 "$PROTO/../projects/upl/scripts/resolve_targets.py"`: параметры `--target-role <роль>`, `--partner-kind vendors|publishers`, `--in-contour <роль сессии>`, по умолчанию требуется единственная активная привязка (`--any-binding` отменяет), опционально `--is-contact` и `--exclude <user_id>`.
+Найденная цель печатается строкой JSON `{"user_id", "partner_id"}`, отсутствие кандидата — код `1`.
 4. Покажи план и запусти: `python3 "$PROTO/../projects/upl/scripts/test_protocol_methods.py" --manifest <manifest> --phase required --plan-only`, затем то же без `--plan-only`.
    Пользователей ролей и cookie-сессии на `UPL_DEV_BASE_URL` разрешает `test_protocol_auth.py` через API от bootstrap супер-админа (override `UPL_DEV_BOOTSTRAP_USER_ID`); БД не читается.
    Нет пользователя роли — ячейки `SKIP`, прогон продолжается; при нескольких активных пользователях роли берётся первый по `id`.
 5. Выдай результат по каждой ячейке: ожидалось, получено, `PASS/FAIL/SKIP/BLOCKED`, статусы prepare/cleanup. Критерий — только HTTP-статус целевого вызова. Единичный `403` цели внутри контура сессии повтори прогоном той же пары до вердикта: контур свежей dev-сессии прогревается не мгновенно.
    `BLOCKED` — prepare-шаг с `"prerequisite": true` получил 404: подходящая под fixture запись отсутствует, ячейка не проверена до появления записи; любой другой сбой prepare — `FAIL`. stdout раннера содержит `user_id` в путях шагов — перед выводом в чат и лог маскируй UUID.
 6. Extended — обязательный второй прогон: при required без `FAIL` и `BLOCKED` запусти остальные роли этих же методов (`--phase extended`), иначе не запускай и зафиксируй блокер. Ожидаемый статус роли бери из требований задачи, при их отсутствии — из матрицы прав: `is_public` ячейки «domain × action» или роль в её составе — 200, иначе — 403.
-   Цель extended-ячейки обновления профиля бери чужой (роль цели ≠ роль актора): self-update игнорирует проверяемое поле (например `is_contact`) и даёт ложный 200 вместо ожидаемого запрета. Ожидания prepare/cleanup у запрещённых extended-ячеек бери `[200, 400, 403]`: 403 — отказ authz, 400 — отказ биндинга тела (PUT требует валидные name/email/phone даже для запрещённого запроса), cleanup-сброс после несостоявшейся мутации не сбой.
+   Цель extended-ячейки обновления профиля бери чужой (роль цели ≠ роль актора): self-update игнорирует проверяемое поле (например `is_contact`) и даёт ложный 200 вместо ожидаемого запрета.
+   Ожидания prepare/cleanup у запрещённых extended-ячеек бери `[200, 400, 403]`: 403 — отказ authz, 400 — отказ биндинга тела (PUT требует валидные name/email/phone даже для запрещённого запроса), cleanup-сброс после несостоявшейся мутации не сбой.
    Незапущенные extended-ячейки в итог `required` не включай.
 
 Границы: Dev БД — только read-only `SELECT`; изменяющие запросы — только сценарии manifest с уникальным fixture или восстановлением и обязательным cleanup; неописуемый сценарий — блокировка ячейки до запросов.

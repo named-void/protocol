@@ -2,7 +2,8 @@
 
 `sync-branch.sh` и `remove-task-worktree.sh` требуют bash >= 3.2 и git >= 2.31; не запускай их через `sh`.
 
-Формат ключа оба скрипта берут из `AGENTS_KEY_PATTERN` и `AGENTS_DERIVED_KEY_PATTERN`, набор типов ветки `sync-branch.sh` — из `AGENTS_BRANCH_TYPES`. Без них действуют `^[A-Za-z][A-Za-z0-9]*-[0-9]+$`, `^[A-Za-z][A-Za-z0-9]*(-[A-Za-z0-9]+)+-[0-9]+$` и `feature bugfix hotfix`. Ключу, не совпавшему с форматом трекера, дополнительно разрешён тип `protocol`.
+Формат ключа оба скрипта берут из `AGENTS_KEY_PATTERN` и `AGENTS_DERIVED_KEY_PATTERN`, набор типов ветки `sync-branch.sh` — из `AGENTS_BRANCH_TYPES`.
+Без них действуют `^[A-Za-z][A-Za-z0-9]*-[0-9]+$`, `^[A-Za-z][A-Za-z0-9]*(-[A-Za-z0-9]+)+-[0-9]+$` и `feature bugfix hotfix`. Ключу, не совпавшему с форматом трекера, дополнительно разрешён тип `protocol`.
 
 `AGENTS_LOCAL_ONLY=1` разрешает работу без `origin` и пропускает fetch. Используй его только для намеренно локального проекта.
 
