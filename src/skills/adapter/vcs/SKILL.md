@@ -1,6 +1,8 @@
 ---
 name: adapter-vcs
-description: 'Триггеры: явный запрос прочитать MR, discussions, review/pipeline state или определить репозиторий по issue либо вызов из `protocol`/`mreviewer`. Адаптер класса vcs-host (продукт — параметр, по умолчанию GitLab); оценка качества кода и проведение ревью принадлежат вызывающему навыку. Read-only по умолчанию.'
+description: 'Триггеры: явный запрос прочитать MR, discussions, review/pipeline state или определить репозиторий по issue либо вызов из `protocol`/`mreviewer`.
+  Адаптер класса vcs-host (продукт — параметр, по умолчанию GitLab); оценка качества кода и проведение ревью принадлежат вызывающему навыку.
+  Read-only по умолчанию.'
 ---
 
 # VCS host
@@ -26,7 +28,9 @@ state. Используй для чтения MR, discussions, review comments, 
 ## Порядок работы
 
 1. Определи host, project и IID из URL или текущего remote; не угадывай отсутствующие значения.
-   Множество известных self-hosted хостов — `vcs_host.hosts` (подсказка-параметр): по нему выбираешь и авторизуешь хост, когда он не выводится из remote однозначно (например, при поиске проекта в confidence gate до появления локального checkout), и отличаешь «свои» хосты от `gitlab.com`.
+
+   Множество известных self-hosted хостов — `vcs_host.hosts` (подсказка-параметр): по нему выбираешь и авторизуешь хост, когда он не выводится из remote однозначно (например, при поиске проекта в confidence gate до появления локального checkout).
+   Отличаешь «свои» хосты от `gitlab.com`.
    Это подсказка, а не жёсткий фильтр — хост из явного URL или remote приоритетен.
 2. Получи metadata, diff, discussions/comments, reviewers, review state и
    pipeline status с учётом pagination.
@@ -49,7 +53,10 @@ state. Используй для чтения MR, discussions, review comments, 
 
 Когда пользователь просит показать MR, статус, discussions или комментарии «своей»/текущей задачи без явного MR URL — определи MR по имени source-ветки вместо запроса ссылки.
 
-1. Запусти `"$AGENT_SKILLS_DIR/adapter-vcs/scripts/find-mr.sh" [branch]` — путь проходит через установленный симлинк; без аргумента берётся текущая checked-out ветка. Для явно названного issue key передай `<type>/<KEY>` (например `feature/ABC-635`). Host и project скрипт определяет из origin; ветку не угадывай, если она не определена однозначно.
+
+1. Запусти `"$AGENT_SKILLS_DIR/adapter-vcs/scripts/find-mr.sh" [branch]` — путь проходит через установленный симлинк; без аргумента берётся текущая checked-out ветка.
+   Для явно названного issue key передай `<type>/<KEY>` (например `feature/ABC-635`).
+   Host и project скрипт определяет из origin; ветку не угадывай, если она не определена однозначно.
 2. Скрипт печатает один из трёх исходов:
    - `count=0` — MR для ветки ещё не создан; сообщи об этом и не создавай его.
    - `count=1 iid=<IID>` — используй этот IID дальше (metadata/diff/discussions/comments, «Порядок работы» и «Доступ к API»).
