@@ -12,6 +12,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from http.cookiejar import CookieJar
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
@@ -19,10 +20,13 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 
 ROLE_PATTERN = re.compile(r"^[A-Za-z0-9_:-]+$")
+# Роль подставляется литералом после ROLE_PATTERN.fullmatch (паттерн исключает
+# кавычки): psql-переменные (:'role') не подставляются, когда psql исполняется
+# docker-exec shim'ом внутри контейнера db (указание 09-22).
 ROLE_USER_QUERY = """
 SELECT id::text
 FROM users
-WHERE role_code = :'role'
+WHERE role_code = '{role}'
   AND deleted_at IS NULL
 ORDER BY id;
 """.strip()
@@ -158,6 +162,10 @@ def resolve_user_ids(
         raise AuthError("psql is required to resolve role users from the Dev DB")
     db_url = os.environ.get(db_url_env)
     if not db_url and not _has_pg_environment():
+        db_url = _env_file_value(DEFAULT_DEV_ENV_FILE, db_url_env)
+        if db_url:
+            os.environ[db_url_env] = db_url
+    if not db_url and not _has_pg_environment():
         raise AuthError(
             f"Set {db_url_env} or PostgreSQL PG* connection variables before testing"
         )
@@ -174,10 +182,8 @@ def resolve_user_ids(
                     "--tuples-only",
                     "--no-align",
                     "--quiet",
-                    "--set",
-                    f"role={role}",
                     "--command",
-                    ROLE_USER_QUERY,
+                    ROLE_USER_QUERY.format(role=role),
                 ],
                 check=False,
                 capture_output=True,
@@ -190,13 +196,11 @@ def resolve_user_ids(
         if completed.returncode != 0:
             raise AuthError(f"Could not query the Dev DB for role {role}")
         user_ids = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-        if len(user_ids) > 1:
-            raise AuthError(
-                f"Role {role} must resolve to exactly one active Dev DB user; found {len(user_ids)}"
-            )
         if not user_ids:
             missing.add(role)
             continue
+        # Любой активный пользователь роли годится для сессии; берём первого по
+        # id — на общей Dev-БД активных пользователей роли обычно много.
         result[role] = user_ids[0]
     return result, missing
 
@@ -205,6 +209,27 @@ def _has_pg_environment() -> bool:
     return bool(os.environ.get("PGHOST") or os.environ.get("PGSERVICE")) and bool(
         os.environ.get("PGDATABASE")
     )
+
+
+# Дефолтный файл окружения проекта UPL (рядом с каталогом scripts). Хранит
+# UPL_DEV_DATABASE_URL для test-protocol; значение никогда не выводится.
+DEFAULT_DEV_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
+
+
+def _env_file_value(path: Path, key: str) -> str | None:
+    """Прочитать KEY=VALUE из файла окружения, не раскрывая значение."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        if name.strip() == key:
+            return value.strip().strip('"').strip("'")
+    return None
 
 
 def _postgres_environment(db_url: str | None) -> dict[str, str]:
