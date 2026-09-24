@@ -138,7 +138,14 @@ def resolve_user_ids_via_api(
     """IDs активных пользователей ролей через LIST /api/v1/users: один dev-login
     bootstrap-пользователя, БД не используется. Роль без активных пользователей
     попадает в missing; из страницы берётся первый по id (детерминированный выбор)."""
-    session = DevSession("super_admin", _bootstrap_user_id(), base_url=base_url, timeout=timeout)
+    bootstrap_id = _bootstrap_user_id()
+    try:
+        session = DevSession("super_admin", bootstrap_id, base_url=base_url, timeout=timeout)
+    except AuthError as error:
+        raise AuthError(
+            f"{error}; bootstrap user {bootstrap_id} is gone from Develop (autotest cleanups remove such users) — "
+            "update the bootstrap: set UPL_DEV_BOOTSTRAP_USER_ID or replace DEFAULT_BOOTSTRAP_USER_ID in test_protocol_auth.py"
+        ) from error
     result: dict[str, str] = {}
     missing: set[str] = set()
     for role in sorted(roles):

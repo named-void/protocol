@@ -3,7 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import os
+import re
 import sys
 import tempfile
 import unittest
@@ -11,23 +11,6 @@ from pathlib import Path
 from unittest import mock
 
 SCRIPTS = Path(__file__).resolve().parents[2] / "projects" / "upl" / "scripts"
-
-FAKE_PSQL = """#!/bin/sh
-role=""
-prev=""
-for argument in "$@"; do
-  if [ "$prev" = "--set" ]; then role="$argument"; fi
-  prev="$argument"
-done
-role=${role#role=}
-if [ "$role" = "__dbfail__" ]; then
-  exit 1
-fi
-safe=$(printf '%s' "$role" | tr -c 'A-Za-z0-9_' '_')
-eval "lines=\\$FAKE_ROLE_${safe}"
-[ -n "$lines" ] && printf '%s\\n' "$lines"
-exit 0
-"""
 
 
 def load_runner_modules():
@@ -39,24 +22,29 @@ def load_runner_modules():
     return test_protocol_auth, test_protocol_methods
 
 
+def api_session(auth, rows_by_role=None, list_status=200):
+    """Подмена DevSession: dev-login считается успешным, LIST отдаёт заготовленное."""
+
+    class FakeApiSession:
+        def __init__(self, role, user_id, *, base_url, timeout=30.0):
+            self.role, self.user_id = role, user_id
+
+        def request(self, method, url, *, body=None, headers=None):
+            match = re.search(r"role_codes=([A-Za-z0-9_:-]+)", url)
+            rows = rows_by_role.get(match.group(1), []) if match and rows_by_role else []
+            payload = json.dumps({"data": rows}).encode("utf-8")
+            return auth.HTTPResponse(status=list_status, body=payload, headers={})
+
+    return FakeApiSession
+
+
 class TestProtocolRunnerTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp_dir.cleanup)
         self.root = Path(self.temp_dir.name)
-        self.psql = self.root / "psql"
-        self.psql.write_text(FAKE_PSQL, encoding="utf-8")
-        self.psql.chmod(0o755)
         self.manifest = self.root / "manifest.json"
         self.auth, self.methods = load_runner_modules()
-
-    def environment(self, **roles: str) -> dict[str, str]:
-        values = {
-            "PATH": f"{self.root}:{os.environ['PATH']}",
-            "UPL_DEV_DATABASE_URL": "postgresql://tester@localhost:5432/upl",
-        }
-        values.update({f"FAKE_ROLE_{name}": value for name, value in roles.items()})
-        return values
 
     def scenario_result(self, scenario: dict, status: int):
         target = self.methods.StepResult(
@@ -82,7 +70,8 @@ class TestProtocolRunnerTest(unittest.TestCase):
 
     def run_runner(
         self,
-        environment: dict[str, str],
+        user_ids: dict[str, str],
+        missing: set[str] | None = None,
         run_scenario=None,
         sessions_seen: list | None = None,
         seen_scenarios: list | None = None,
@@ -90,17 +79,20 @@ class TestProtocolRunnerTest(unittest.TestCase):
     ) -> tuple[int, str]:
         buffer = io.StringIO()
 
-        def fake_sessions(user_ids, *, base_url, timeout):
+        def fake_resolver(roles, *, base_url, timeout):
+            return dict(user_ids), set(missing or ())
+
+        def fake_sessions(resolved, *, base_url, timeout):
             if sessions_seen is not None:
-                sessions_seen.append(sorted(user_ids))
-            return {role: object() for role in user_ids}
+                sessions_seen.append(sorted(resolved))
+            return {role: object() for role in resolved}
 
         def default_run(scenario, **kwargs):
             if seen_scenarios is not None:
                 seen_scenarios.append(scenario["id"])
             return self.scenario_result(scenario, 200)
 
-        with mock.patch.dict(os.environ, environment), \
+        with mock.patch.object(self.methods, "resolve_user_ids_via_api", fake_resolver), \
                 mock.patch.object(self.methods, "create_sessions", fake_sessions), \
                 mock.patch.object(self.methods, "run_scenario", run_scenario or default_run), \
                 contextlib.redirect_stdout(buffer):
@@ -110,29 +102,44 @@ class TestProtocolRunnerTest(unittest.TestCase):
         return code, buffer.getvalue()
 
     def test_resolve_reports_missing_role_without_raising(self) -> None:
-        with mock.patch.dict(os.environ, self.environment(alpha="111")):
-            users, missing = self.auth.resolve_user_ids({"alpha", "beta"})
+        fake = api_session(self.auth, {"alpha": [{"id": "111"}]})
+        with mock.patch.object(self.auth, "DevSession", fake):
+            users, missing = self.auth.resolve_user_ids_via_api({"alpha", "beta"}, base_url="https://dev.test")
 
         self.assertEqual({"alpha": "111"}, users)
         self.assertEqual({"beta"}, missing)
 
-    def test_resolve_raises_on_ambiguous_role(self) -> None:
-        with mock.patch.dict(os.environ, self.environment(gamma="1\n2")):
+    def test_resolve_takes_first_id_by_sort_order(self) -> None:
+        fake = api_session(self.auth, {"gamma": [{"id": "9"}, {"id": "2"}]})
+        with mock.patch.object(self.auth, "DevSession", fake):
+            users, missing = self.auth.resolve_user_ids_via_api({"gamma"}, base_url="https://dev.test")
+
+        self.assertEqual({"gamma": "2"}, users)
+        self.assertEqual(set(), missing)
+
+    def test_resolve_raises_on_failed_listing(self) -> None:
+        fake = api_session(self.auth, list_status=503)
+        with mock.patch.object(self.auth, "DevSession", fake):
             with self.assertRaises(self.auth.AuthError) as raised:
-                self.auth.resolve_user_ids({"gamma"})
+                self.auth.resolve_user_ids_via_api({"gamma"}, base_url="https://dev.test")
 
-        self.assertIn("found 2", str(raised.exception))
+        self.assertIn("HTTP 503", str(raised.exception))
 
-    def test_resolve_raises_on_database_failure(self) -> None:
-        with mock.patch.dict(os.environ, self.environment()):
-            with self.assertRaises(self.auth.AuthError) as raised:
-                self.auth.resolve_user_ids({"__dbfail__"})
+    def test_bootstrap_failure_names_the_override(self) -> None:
+        auth = self.auth
 
-        self.assertIn("Could not query", str(raised.exception))
+        class DeadBootstrap:
+            def __init__(self, role, user_id, *, base_url, timeout=30.0):
+                raise auth.AuthError(f"Dev login failed for role {role}: HTTP 404")
 
-    def test_resolve_requires_roles(self) -> None:
-        with self.assertRaises(self.auth.AuthError):
-            self.auth.resolve_user_ids(set())
+        with mock.patch.object(auth, "DevSession", DeadBootstrap):
+            with self.assertRaises(auth.AuthError) as raised:
+                auth.resolve_user_ids_via_api({"alpha"}, base_url="https://dev.test")
+
+        message = str(raised.exception)
+        self.assertIn("HTTP 404", message)
+        self.assertIn("UPL_DEV_BOOTSTRAP_USER_ID", message)
+        self.assertIn("DEFAULT_BOOTSTRAP_USER_ID", message)
 
     def write_manifest(self, scenarios: list[dict]) -> None:
         self.manifest.write_text(
@@ -181,7 +188,8 @@ class TestProtocolRunnerTest(unittest.TestCase):
         sessions: list[list[str]] = []
 
         code, output = self.run_runner(
-            self.environment(alpha="111"),
+            {"alpha": "1"},
+            missing={"beta"},
             sessions_seen=sessions,
             seen_scenarios=seen,
         )
@@ -206,10 +214,7 @@ class TestProtocolRunnerTest(unittest.TestCase):
         self.write_manifest([mixed])
         seen: list[str] = []
 
-        code, output = self.run_runner(
-            self.environment(alpha="111"),
-            seen_scenarios=seen,
-        )
+        code, output = self.run_runner({"alpha": "1"}, missing={"beta"}, seen_scenarios=seen)
 
         self.assertEqual(0, code, output)
         self.assertEqual([], seen)
@@ -227,7 +232,8 @@ class TestProtocolRunnerTest(unittest.TestCase):
             return self.scenario_result(scenario, 403)
 
         code, output = self.run_runner(
-            self.environment(alpha="111"),
+            {"alpha": "1"},
+            missing={"beta"},
             run_scenario=failing,
         )
 
@@ -244,18 +250,16 @@ class TestProtocolRunnerTest(unittest.TestCase):
         )
         sessions: list[list[str]] = []
 
-        code, output = self.run_runner(self.environment(), sessions_seen=sessions)
+        code, output = self.run_runner({}, missing={"alpha", "beta"}, sessions_seen=sessions)
 
         self.assertEqual(0, code, output)
         self.assertEqual([[]], sessions)
         self.assertEqual(2, output.count("RESULT SKIP"))
 
-    def test_runner_plan_only_needs_no_database(self) -> None:
+    def test_runner_plan_only_needs_no_network(self) -> None:
         self.write_manifest([self.read_only_scenario("s-alpha", "alpha", "/a")])
-        environment = self.environment()
-        environment.pop("UPL_DEV_DATABASE_URL")
 
-        code, output = self.run_runner(environment, extra=["--plan-only"])
+        code, output = self.run_runner({}, extra=["--plan-only"])
 
         self.assertEqual(0, code, output)
         self.assertIn("PLAN phase=required scenarios=1", output)
@@ -523,7 +527,7 @@ class TestProtocolRunnerTest(unittest.TestCase):
                 blocked=True,
             )
 
-        code, output = self.run_runner(self.environment(alpha="111"), run_scenario=blocked)
+        code, output = self.run_runner({"alpha": "1"}, run_scenario=blocked)
 
         self.assertEqual(1, code, output)
         self.assertIn("RESULT BLOCKED s-alpha", output)
