@@ -2,6 +2,7 @@ CODEX_HOME ?= $(HOME)/.codex
 CLAUDE_HOME ?= $(HOME)/.claude
 KILO_CONFIG_HOME ?= $(HOME)/.config/kilo
 CURSOR_HOME ?= $(HOME)/.cursor
+OMP_HOME ?= $(HOME)/.omp
 SKILLS_DIR := $(CURDIR)/skills
 SKILL_LINKS := $(CURDIR)/scripts/manage-skill-links.sh
 INSTRUCTION_LINK := $(CURDIR)/scripts/manage-instruction-link.sh
@@ -52,7 +53,7 @@ uninstall: ## удалить симлинки инструкций и навык
 
 doctor: ## проверить станцию: версии, конфиг, MCP и симлинки
 	@CODEX_HOME="$(CODEX_HOME)" CLAUDE_HOME="$(CLAUDE_HOME)" KILO_CONFIG_HOME="$(KILO_CONFIG_HOME)" \
-	 CURSOR_HOME="$(CURSOR_HOME)" \
+	 CURSOR_HOME="$(CURSOR_HOME)" OMP_HOME="$(OMP_HOME)" \
 	 bash "$(DOCTOR)" $(SKILL_PAIRS)
 
 check: lint test ## прогнать проверки репозитория: lint и test

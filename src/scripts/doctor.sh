@@ -11,6 +11,7 @@ CODEX_HOME=${CODEX_HOME:-$HOME/.codex}
 CLAUDE_HOME=${CLAUDE_HOME:-$HOME/.claude}
 KILO_CONFIG_HOME=${KILO_CONFIG_HOME:-$HOME/.config/kilo}
 CURSOR_HOME=${CURSOR_HOME:-$HOME/.cursor}
+OMP_HOME=${OMP_HOME:-$HOME/.omp}
 
 # Реестр точек входа приходит из Makefile теми же парами `<имя> <путь>`, что
 # получает manage-skill-links.sh: второй копии списка навыков здесь быть не
@@ -186,5 +187,19 @@ check_cli codex "$CODEX_HOME/skills" "$CODEX_HOME/AGENTS.md"
 check_cli claude "$CLAUDE_HOME/skills" "$CLAUDE_HOME/CLAUDE.md"
 check_cli kilo "$KILO_CONFIG_HOME/skills" "$KILO_CONFIG_HOME/AGENTS.md"
 check_cli cursor "$CURSOR_HOME/skills" "$CURSOR_HOME/AGENTS.md"
+
+# omp потребляет кодекс-совместимый слой правил (свод и навыки в CODEX_HOME,
+# проверены строкой выше) и отдельной установки не требует; собственный слой —
+# бинарник и конфиг станции.
+if command -v omp >/dev/null 2>&1; then
+  echo "ok: omp installed ($(omp --version 2>/dev/null | awk -F/ '{print $2}'))"
+else
+  echo "warn: omp not installed"
+fi
+if [[ -f "$OMP_HOME/agent/config.yml" ]]; then
+  echo "ok: omp station config ($OMP_HOME/agent/config.yml)"
+else
+  echo "warn: omp station config missing ($OMP_HOME/agent/config.yml)"
+fi
 
 exit $fail
