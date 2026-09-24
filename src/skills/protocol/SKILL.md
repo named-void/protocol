@@ -71,7 +71,7 @@ description: 'Триггеры: точное сообщение `read-protocol`,
 ### Локальная предмаршрутная инвентаризация после `read-protocol`
 
 После Bootstrap передай исходное полное Jira URL или ключ `UPL-<code>` в `"$PROTOCOL_SKILL/scripts/resolve_issue.py"`. Сохрани из JSON-результата нормализованные `KEY`, `ISSUE_URL` и `project_roots`; для ключа URL формирует resolver из настроенного Jira host.
-`DATA_ROOT` получи только с контекстом проекта — `cd <project_roots[0]> && python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root` либо `AGENTS_PROJECT=<проект> python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root`: без контекста (cwd вне корней проекта, без override) команда молча возвращает `projects/_common/.data`, где артефактов задачи нет. Ничего не создавай и не меняй.
+`DATA_ROOT` получи только с контекстом проекта — `cd <project_roots[0]> && python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root` либо `AGENTS_PROJECT=<проект> python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root`; аргументы команда игнорирует, а без контекста молча возвращает `projects/_common/.data` без артефактов задачи. Ничего не создавай и не меняй.
 
 В read-only режиме проверь `<DATA_ROOT>/tasks/<KEY>/state.md` и соседние артефакты задачи, включая `status`, `next`, `work_root`, `branch`, `candidate`, `checked_candidate` и перечень итераций.
 В каждом доступном локальном checkout под корнями `project.roots` текущей карты проектов проверь `git worktree list --porcelain`, локальные ветки и remote-tracking refs с ключом задачи, а для текущего checkout и каждого найденного task worktree — `git status --short --branch`; отдельно зафиксируй `clean`, `dirty`, `detached` и наличие незакоммиченных изменений.
@@ -128,7 +128,7 @@ Issue key проверь по `issue_tracker.key_pattern` текущей кар�
    ```
 
    Полностью прочитай каждый возвращённый профиль до Define. Ответ `- outside` означает отсутствие проектных профилей. Ошибка команды, отсутствующий или нечитаемый профиль блокирует маршрут. Явно названные профилем обязательные policy-файлы прочитай до действия, которое от них зависит; не обходи остальные каталоги проекта.
-3. Получи `DATA_ROOT` только с контекстом проекта, опознанного на шаге 2, — `cd "$WORK_ROOT" && python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root` либо `AGENTS_PROJECT=<проект> python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root`; без контекста команда молча возвращает `projects/_common/.data`. Используй `<DATA_ROOT>/tasks/<task>/` как `TASK_DIR`; отсутствующие каталог и `state.md` создай после Branch-Sync и до Define.
+3. Получи `DATA_ROOT` только с контекстом проекта — `cd "$WORK_ROOT" && python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root` либо `AGENTS_PROJECT=<проект> python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root`. Используй `<DATA_ROOT>/tasks/<task>/` как `TASK_DIR`; отсутствующие каталог и `state.md` создай после Branch-Sync и до Define.
 4. Убери деревья завершённых задач этого репозитория по разделу «Уборка деревьев» `git-lifecycle.md`. Шаг стоит здесь: `status` и `evidence` кандидата читаются из его `state.md` в `<DATA_ROOT>/tasks/`, а дерево текущей задачи уже занято Branch-Sync и под уборку не попадает.
 
 ## Состояние задачи
