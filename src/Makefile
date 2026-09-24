@@ -36,20 +36,24 @@ install: ## установить симлинки инструкций и нав
 	@"$(INSTRUCTION_LINK)" install "$(CLAUDE_HOME)/CLAUDE.md" "$(CURDIR)/AGENTS.md"
 	@"$(INSTRUCTION_LINK)" install "$(KILO_CONFIG_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
 	@"$(INSTRUCTION_LINK)" install "$(CURSOR_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
+	@"$(INSTRUCTION_LINK)" install "$(OMP_HOME)/agent/AGENTS.md" "$(CURDIR)/AGENTS.md"
 	@"$(SKILL_LINKS)" install "$(CODEX_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" install "$(CLAUDE_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" install "$(KILO_CONFIG_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" install "$(CURSOR_HOME)/skills" $(SKILL_PAIRS)
+	@"$(SKILL_LINKS)" install "$(OMP_HOME)/agent/skills" $(SKILL_PAIRS)
 
 uninstall: ## удалить симлинки инструкций и навыков
 	@"$(INSTRUCTION_LINK)" uninstall "$(CODEX_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
 	@"$(INSTRUCTION_LINK)" uninstall "$(CLAUDE_HOME)/CLAUDE.md" "$(CURDIR)/AGENTS.md"
 	@"$(INSTRUCTION_LINK)" uninstall "$(KILO_CONFIG_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
 	@"$(INSTRUCTION_LINK)" uninstall "$(CURSOR_HOME)/AGENTS.md" "$(CURDIR)/AGENTS.md"
+	@"$(INSTRUCTION_LINK)" uninstall "$(OMP_HOME)/agent/AGENTS.md" "$(CURDIR)/AGENTS.md"
 	@"$(SKILL_LINKS)" uninstall "$(CODEX_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" uninstall "$(CLAUDE_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" uninstall "$(KILO_CONFIG_HOME)/skills" $(SKILL_PAIRS)
 	@"$(SKILL_LINKS)" uninstall "$(CURSOR_HOME)/skills" $(SKILL_PAIRS)
+	@"$(SKILL_LINKS)" uninstall "$(OMP_HOME)/agent/skills" $(SKILL_PAIRS)
 
 doctor: ## проверить станцию: версии, конфиг, MCP и симлинки
 	@CODEX_HOME="$(CODEX_HOME)" CLAUDE_HOME="$(CLAUDE_HOME)" KILO_CONFIG_HOME="$(KILO_CONFIG_HOME)" \

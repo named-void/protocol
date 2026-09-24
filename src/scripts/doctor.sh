@@ -188,9 +188,10 @@ check_cli claude "$CLAUDE_HOME/skills" "$CLAUDE_HOME/CLAUDE.md"
 check_cli kilo "$KILO_CONFIG_HOME/skills" "$KILO_CONFIG_HOME/AGENTS.md"
 check_cli cursor "$CURSOR_HOME/skills" "$CURSOR_HOME/AGENTS.md"
 
-# omp потребляет кодекс-совместимый слой правил (свод и навыки в CODEX_HOME,
-# проверены строкой выше) и отдельной установки не требует; собственный слой —
-# бинарник и конфиг станции.
+# omp потребляет собственный нативный слой (свод и навыки в OMP_HOME/agent);
+# кодекс-совместимые провайдеры правил на станции выключены.
+check_cli omp "$OMP_HOME/agent/skills" "$OMP_HOME/agent/AGENTS.md"
+
 if command -v omp >/dev/null 2>&1; then
   echo "ok: omp installed ($(omp --version 2>/dev/null | awk -F/ '{print $2}'))"
 else
