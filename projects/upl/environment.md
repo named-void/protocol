@@ -14,6 +14,8 @@
 ## Dev-авторизация для `test-protocol`
 
 - Все запросы к Develop идут через общий домен `https://develop.getblogger.ru` (или `UPL_DEV_BASE_URL`); сервис определяется только path. `test-protocol` не читает auth-service и не извлекает из него роли или permission.
+- Базовый URL для user-service-прогонов — только apex `https://develop.getblogger.ru`: сервисный `user.develop.getblogger.ru` целиком за oauth2-proxy — неаутентифицированные запросы, включая `/auth/dev/login`, отдают `302` на Keycloak OIDC, и dev-login без SSO-сессии там не работает; cookie-сессия apex принимается и на `user.develop`, поэтому обходить SSO не нужно.
+  Apex периодически не резолвится с рабочей машины (Errno 8, DNS/VPN-зависимость): при отказе резолва повтори пробу и проверь VPN — сменять домен не пытайся.
 - Пользователей ролей резолвирует `test_protocol_auth.py` через API: `GET /api/v1/users?role_codes=<role>&is_deleted=false` от bootstrap супер-админа; не подставляй идентификатор из примера, локальной БД или Jira и не передавай роль, не подтверждённую резолвом.
 - Получай cookie-сессию отдельным запросом на `POST https://develop.getblogger.ru/auth/dev/login` с телом:
 
