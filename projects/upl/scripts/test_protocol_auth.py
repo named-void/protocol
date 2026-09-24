@@ -7,29 +7,15 @@ import argparse
 import json
 import os
 import re
-import shutil
-import subprocess
 import sys
 from dataclasses import dataclass
 from http.cookiejar import CookieJar
-from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from urllib.request import HTTPCookieProcessor, Request, build_opener
 
 
 ROLE_PATTERN = re.compile(r"^[A-Za-z0-9_:-]+$")
-# Роль подставляется литералом после ROLE_PATTERN.fullmatch (паттерн исключает
-# кавычки): psql-переменные (:'role') не подставляются, когда psql исполняется
-# docker-exec shim'ом внутри контейнера db (указание 09-22).
-ROLE_USER_QUERY = """
-SELECT id::text
-FROM users
-WHERE role_code = '{role}'
-  AND deleted_at IS NULL
-ORDER BY id;
-""".strip()
 XSRF_COOKIE = "XSRF-TOKEN"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 
@@ -143,79 +129,16 @@ class DevSession:
         return None
 
 
-def resolve_user_ids(
-    roles: set[str],
-    *,
-    db_url_env: str = "UPL_DEV_DATABASE_URL",
-    timeout: float = 30.0,
-) -> tuple[dict[str, str], set[str]]:
-    """Resolve one active user per role; return resolved users and roles with no active user."""
-
-    if not roles:
-        raise AuthError("No roles supplied")
-    for role in roles:
-        if not ROLE_PATTERN.fullmatch(role):
-            raise AuthError(f"Invalid role code: {role}")
-
-    psql = shutil.which("psql")
-    if psql is None:
-        raise AuthError("psql is required to resolve role users from the Dev DB")
-    db_url = os.environ.get(db_url_env)
-    if not db_url and not _has_pg_environment():
-        db_url = _env_file_value(DEFAULT_DEV_ENV_FILE, db_url_env)
-        if db_url:
-            os.environ[db_url_env] = db_url
-    if not db_url and not _has_pg_environment():
-        raise AuthError(
-            f"Set {db_url_env} or PostgreSQL PG* connection variables before testing"
-        )
-
-    environment = _postgres_environment(db_url)
-    result: dict[str, str] = {}
-    missing: set[str] = set()
-    for role in sorted(roles):
-        try:
-            completed = subprocess.run(
-                [
-                    psql,
-                    "--no-psqlrc",
-                    "--tuples-only",
-                    "--no-align",
-                    "--quiet",
-                    "--command",
-                    ROLE_USER_QUERY.format(role=role),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                env=environment,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as error:
-            raise AuthError(f"Timed out resolving role {role} from the Dev DB") from error
-        if completed.returncode != 0:
-            raise AuthError(f"Could not query the Dev DB for role {role}")
-        user_ids = [line.strip() for line in completed.stdout.splitlines() if line.strip()]
-        if not user_ids:
-            missing.add(role)
-            continue
-        # Любой активный пользователь роли годится для сессии; берём первого по
-        # id — на общей Dev-БД активных пользователей роли обычно много.
-        result[role] = user_ids[0]
-    return result, missing
-
-
 def resolve_user_ids_via_api(
     roles: set[str],
     *,
     base_url: str,
-    bootstrap_user_id: str,
     timeout: float = 30.0,
 ) -> tuple[dict[str, str], set[str]]:
     """IDs активных пользователей ролей через LIST /api/v1/users: один dev-login
-    super_admin-пользователя, БД не используется. Роль без активных пользователей
-    попадает в missing; из страницы берётся первый по id (детерминизм как в БД-пути)."""
-    session = DevSession("super_admin", bootstrap_user_id, base_url=base_url, timeout=timeout)
+    bootstrap-пользователя, БД не используется. Роль без активных пользователей
+    попадает в missing; из страницы берётся первый по id (детерминированный выбор)."""
+    session = DevSession("super_admin", _bootstrap_user_id(), base_url=base_url, timeout=timeout)
     result: dict[str, str] = {}
     missing: set[str] = set()
     for role in sorted(roles):
@@ -251,53 +174,15 @@ def resolve_user_ids_via_api(
     return result, missing
 
 
-def _has_pg_environment() -> bool:
-    return bool(os.environ.get("PGHOST") or os.environ.get("PGSERVICE")) and bool(
-        os.environ.get("PGDATABASE")
-    )
+# Bootstrap для API-резолва ролей: id активного супер-админа на Develop.
+# Не секрет: без dev-login на стенде id ничего не даёт. Override — переменная
+# окружения UPL_DEV_BOOTSTRAP_USER_ID (пользователь может быть удалён autotest'ом).
+DEFAULT_BOOTSTRAP_USER_ID = "00e838f1-04a4-40fe-95ec-92a05d0b4922"
 
 
-# Дефолтный файл окружения проекта UPL (рядом с каталогом scripts). Хранит
-# UPL_DEV_DATABASE_URL для test-protocol; значение никогда не выводится.
-DEFAULT_DEV_ENV_FILE = Path(__file__).resolve().parent.parent / ".env"
-
-
-def _env_file_value(path: Path, key: str) -> str | None:
-    """Прочитать KEY=VALUE из файла окружения, не раскрывая значение."""
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except OSError:
-        return None
-    for line in lines:
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        name, _, value = line.partition("=")
-        if name.strip() == key:
-            return value.strip().strip('"').strip("'")
-    return None
-
-
-def _postgres_environment(db_url: str | None) -> dict[str, str]:
-    environment = os.environ.copy()
-    if not db_url:
-        return environment
-    parsed = urlsplit(db_url)
-    if parsed.scheme not in {"postgres", "postgresql"} or not parsed.hostname:
-        raise AuthError("UPL_DEV_DATABASE_URL must be a PostgreSQL URL")
-    environment["PGHOST"] = parsed.hostname
-    environment["PGPORT"] = str(parsed.port or 5432)
-    if parsed.username:
-        environment["PGUSER"] = parsed.username
-    if parsed.password:
-        environment["PGPASSWORD"] = parsed.password
-    if parsed.path.lstrip("/"):
-        environment["PGDATABASE"] = parsed.path.lstrip("/")
-    query = dict(part.split("=", 1) for part in parsed.query.split("&") if "=" in part)
-    if "sslmode" in query:
-        environment["PGSSLMODE"] = query["sslmode"]
-    environment.pop("UPL_DEV_DATABASE_URL", None)
-    return environment
+def _bootstrap_user_id() -> str:
+    """ID супер-админа для первого dev-login: окружение или дефолт выше."""
+    return os.environ.get("UPL_DEV_BOOTSTRAP_USER_ID") or DEFAULT_BOOTSTRAP_USER_ID
 
 
 def _join_url(base_url: str, path: str) -> str:
@@ -326,20 +211,19 @@ def main(argv: list[str] | None = None) -> int:
         "--base-url",
         default=os.environ.get("UPL_DEV_BASE_URL", "https://develop.getblogger.ru"),
     )
-    parser.add_argument("--db-url-env", default="UPL_DEV_DATABASE_URL")
     parser.add_argument("--timeout", type=float, default=30.0)
     args = parser.parse_args(argv)
     try:
         roles = set(args.roles)
-        user_ids, missing_roles = resolve_user_ids(
-            roles, db_url_env=args.db_url_env, timeout=args.timeout
+        user_ids, missing_roles = resolve_user_ids_via_api(
+            roles, base_url=args.base_url, timeout=args.timeout
         )
         create_sessions(user_ids, base_url=args.base_url, timeout=args.timeout)
     except AuthError as error:
         print(f"test_protocol_auth: {error}", file=sys.stderr)
         return 2
     for role in sorted(missing_roles):
-        print(f"skipped: {role} (no active Dev DB user)")
+        print(f"skipped: {role} (no active user)")
     for role in sorted(user_ids):
         print(f"authenticated: {role}")
     return 0

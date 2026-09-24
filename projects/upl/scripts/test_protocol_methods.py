@@ -20,7 +20,6 @@ from test_protocol_auth import (
     AuthError,
     DevSession,
     create_sessions,
-    resolve_user_ids,
     resolve_user_ids_via_api,
 )
 
@@ -538,7 +537,6 @@ def main(argv: list[str] | None = None) -> int:
         "--base-url",
         default=os.environ.get("UPL_DEV_BASE_URL", "https://develop.getblogger.ru"),
     )
-    parser.add_argument("--db-url-env", default="UPL_DEV_DATABASE_URL")
     parser.add_argument("--timeout", type=float, default=30.0)
     args = parser.parse_args(argv)
 
@@ -551,20 +549,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.plan_only:
             return 0
         roles = _scenario_roles(scenarios)
-        bootstrap_user_id = os.environ.get("UPL_DEV_BOOTSTRAP_USER_ID")
-        if bootstrap_user_id:
-            user_ids, missing_roles = resolve_user_ids_via_api(
-                roles,
-                base_url=base_url,
-                bootstrap_user_id=bootstrap_user_id,
-                timeout=args.timeout,
-            )
-        else:
-            user_ids, missing_roles = resolve_user_ids(
-                roles, db_url_env=args.db_url_env, timeout=args.timeout
-            )
+        user_ids, missing_roles = resolve_user_ids_via_api(
+            roles, base_url=base_url, timeout=args.timeout
+        )
         for role in sorted(missing_roles):
-            print(f"SKIPPED role={role} (no active Dev DB user)")
+            print(f"SKIPPED role={role} (no active user)")
         sessions = create_sessions(
             user_ids,
             base_url=base_url,
