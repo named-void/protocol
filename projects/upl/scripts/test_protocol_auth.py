@@ -205,6 +205,52 @@ def resolve_user_ids(
     return result, missing
 
 
+def resolve_user_ids_via_api(
+    roles: set[str],
+    *,
+    base_url: str,
+    bootstrap_user_id: str,
+    timeout: float = 30.0,
+) -> tuple[dict[str, str], set[str]]:
+    """IDs активных пользователей ролей через LIST /api/v1/users: один dev-login
+    super_admin-пользователя, БД не используется. Роль без активных пользователей
+    попадает в missing; из страницы берётся первый по id (детерминизм как в БД-пути)."""
+    session = DevSession("super_admin", bootstrap_user_id, base_url=base_url, timeout=timeout)
+    result: dict[str, str] = {}
+    missing: set[str] = set()
+    for role in sorted(roles):
+        if not ROLE_PATTERN.fullmatch(role):
+            raise AuthError(f"Invalid role code: {role}")
+        ids: list[str] = []
+        page = 1
+        while True:
+            try:
+                response = session.request(
+                    method="GET",
+                    url=_join_url(
+                        base_url,
+                        f"/api/v1/users?role_codes={role}&is_deleted=false&page={page}&page_size=100",
+                    ),
+                    headers={"Accept": "application/json"},
+                )
+            except (HTTPError, URLError) as error:
+                raise AuthError(
+                    f"LIST /api/v1/users failed for role {role}: {error}"
+                ) from error
+            if response.status != 200:
+                raise AuthError(f"LIST /api/v1/users failed for role {role}: HTTP {response.status}")
+            data = (response.json or {}).get("data") or []
+            ids.extend(str(item["id"]) for item in data if item.get("id"))
+            if len(data) < 100:
+                break
+            page += 1
+        if not ids:
+            missing.add(role)
+            continue
+        result[role] = sorted(ids)[0]
+    return result, missing
+
+
 def _has_pg_environment() -> bool:
     return bool(os.environ.get("PGHOST") or os.environ.get("PGSERVICE")) and bool(
         os.environ.get("PGDATABASE")

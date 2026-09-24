@@ -21,6 +21,7 @@ from test_protocol_auth import (
     DevSession,
     create_sessions,
     resolve_user_ids,
+    resolve_user_ids_via_api,
 )
 
 
@@ -550,9 +551,18 @@ def main(argv: list[str] | None = None) -> int:
         if args.plan_only:
             return 0
         roles = _scenario_roles(scenarios)
-        user_ids, missing_roles = resolve_user_ids(
-            roles, db_url_env=args.db_url_env, timeout=args.timeout
-        )
+        bootstrap_user_id = os.environ.get("UPL_DEV_BOOTSTRAP_USER_ID")
+        if bootstrap_user_id:
+            user_ids, missing_roles = resolve_user_ids_via_api(
+                roles,
+                base_url=base_url,
+                bootstrap_user_id=bootstrap_user_id,
+                timeout=args.timeout,
+            )
+        else:
+            user_ids, missing_roles = resolve_user_ids(
+                roles, db_url_env=args.db_url_env, timeout=args.timeout
+            )
         for role in sorted(missing_roles):
             print(f"SKIPPED role={role} (no active Dev DB user)")
         sessions = create_sessions(
