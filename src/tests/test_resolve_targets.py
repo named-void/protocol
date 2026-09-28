@@ -47,9 +47,9 @@ def user(user_id: str, *, is_contact: bool = True) -> dict:
 class ResolveTargetsTest(unittest.TestCase):
     def setUp(self) -> None:
         self.helper = load_helper()
-        import test_protocol_auth
+        import test_dev_rights_auth
 
-        self.auth = test_protocol_auth
+        self.auth = test_dev_rights_auth
 
     def run_helper(self, argv: list[str], users_by_role: dict, cards: dict) -> tuple[int, str]:
         buffer = io.StringIO()

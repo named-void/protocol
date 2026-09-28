@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Резолв цели manifest-сценария test-protocol через API Develop (без БД).
+"""Резолв цели manifest-сценария test-dev-rights через API Develop (без БД).
 
 Выбирает активного пользователя целевой роли по привязкам к партнёрам:
 --partner-kind задаёт тип привязки (vendors|publishers), --in-contour
@@ -21,7 +21,7 @@ import os
 import sys
 from dataclasses import dataclass
 
-from test_protocol_auth import (
+from test_dev_rights_auth import (
     AuthError,
     DevSession,
     _join_url,

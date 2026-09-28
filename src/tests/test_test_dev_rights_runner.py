@@ -16,10 +16,10 @@ SCRIPTS = Path(__file__).resolve().parents[2] / "projects" / "upl" / "scripts"
 def load_runner_modules():
     if str(SCRIPTS) not in sys.path:
         sys.path.insert(0, str(SCRIPTS))
-    import test_protocol_auth
-    import test_protocol_methods
+    import test_dev_rights_auth
+    import test_dev_rights_methods
 
-    return test_protocol_auth, test_protocol_methods
+    return test_dev_rights_auth, test_dev_rights_methods
 
 
 def api_session(auth, rows_by_role=None, list_status=200):

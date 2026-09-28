@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
-from test_protocol_auth import (
+from test_dev_rights_auth import (
     AuthError,
     DevSession,
     create_sessions,
@@ -560,7 +560,7 @@ def main(argv: list[str] | None = None) -> int:
             timeout=args.timeout,
         )
     except (AuthError, ScenarioError, OSError) as error:
-        print(f"test_protocol_methods: {error}", file=sys.stderr)
+        print(f"test_dev_rights_methods: {error}", file=sys.stderr)
         return 2
 
     results = []

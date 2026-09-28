@@ -1,13 +1,13 @@
 ---
-name: test-protocol
-description: 'Триггер: точное сообщение `test-protocol UPL-CODE`; двухфазная автоматизированная проверка изменённых пар «метод × роль» UPL на Develop с обязательным вторым прогоном расширенной фазы.'
+name: test-dev-rights
+description: 'Триггер: точное сообщение `test-dev-rights UPL-CODE`; двухфазная автоматизированная проверка изменённых пар «метод × роль» UPL на Develop с обязательным вторым прогоном расширенной фазы.'
 ---
 
 # Проверка прав доступа UPL на стенде
 
 Команда не открывает цикл доработки и не разрешает изменения кода, Jira, Git, Wiki и `state.md`.
 
-1. Разреши `PROTO` от физического расположения skill (симлинк каталога навыка checkout не даёт): `PROTO="$(dirname "$(realpath '<путь загруженного test-protocol/SKILL.md>')")/../.."` — каталог `src` репозитория протокола.
+1. Разреши `PROTO` от физического расположения skill (симлинк каталога навыка checkout не даёт): `PROTO="$(dirname "$(realpath '<путь загруженного test-dev-rights/SKILL.md>')")/../.."` — каталог `src` репозитория протокола.
    Проверь `test -r` для `$PROTO/skills/protocol/scripts/resolve_issue.py` и `$PROTO/lib/skills_config.py`, отсутствие — блокер.
    Запусти `python3 "$PROTO/skills/protocol/scripts/resolve_issue.py" <UPL-code>`, сохрани `KEY` и `project_roots`.
    `DATA_ROOT` получи только с контекстом проекта — `cd <project_roots[0]> && python3 "$PROTO/lib/skills_config.py" data-root` либо `AGENTS_PROJECT=<проект> python3 "$PROTO/lib/skills_config.py" data-root`.
@@ -20,7 +20,7 @@ description: 'Триггер: точное сообщение `test-protocol UPL
    Обнови кэш матрицы прав: `python3 "$PROTO/../projects/upl/scripts/build_perm_matrix.py" --migrations "<корень UPL из projects/upl/project.toml>/services/auth-service/migrations" --out "<DATA_ROOT>/upl/perm-matrix.json"`
    — пересборка только при миграциях новее сохранённых, неразобранный стейтмент — блокер.
    Матрица «domain × action → роли» — источник фактических составов ролей домена для manifest.
-3. Подготовь manifest на каждый метод в `<TASK_DIR>/test-protocol/methods/`; одна ячейка — один сценарий:
+3. Подготовь manifest на каждый метод в `<TASK_DIR>/test-dev-rights/methods/`; одна ячейка — один сценарий:
 
 ```json
 {
@@ -44,8 +44,8 @@ Cleanup раннера восстанавливает только захвач�
 Кандидата цели разрешай версионированным хелпером `python3 "$PROTO/../projects/upl/scripts/resolve_targets.py"`: параметры `--target-role <роль>`, `--partner-kind vendors|publishers`, `--in-contour <роль сессии>`.
 По умолчанию требуется единственная активная привязка (`--any-binding` отменяет), опционально `--is-contact` и `--exclude <user_id>`.
 Найденная цель печатается строкой JSON `{"user_id", "partner_id"}`, отсутствие кандидата — код `1`.
-4. Покажи план и запусти: `python3 "$PROTO/../projects/upl/scripts/test_protocol_methods.py" --manifest <manifest> --phase required --plan-only`, затем то же без `--plan-only`.
-   Пользователей ролей и cookie-сессии на `UPL_DEV_BASE_URL` разрешает `test_protocol_auth.py` через API от bootstrap супер-админа (override `UPL_DEV_BOOTSTRAP_USER_ID`); БД не читается.
+4. Покажи план и запусти: `python3 "$PROTO/../projects/upl/scripts/test_dev_rights_methods.py" --manifest <manifest> --phase required --plan-only`, затем то же без `--plan-only`.
+   Пользователей ролей и cookie-сессии на `UPL_DEV_BASE_URL` разрешает `test_dev_rights_auth.py` через API от bootstrap супер-админа (override `UPL_DEV_BOOTSTRAP_USER_ID`); БД не читается.
    Нет пользователя роли — ячейки `SKIP`, прогон продолжается; при нескольких активных пользователях роли берётся первый по `id`.
 5. Выдай результат по каждой ячейке: ожидалось, получено, `PASS/FAIL/SKIP/BLOCKED`, статусы prepare/cleanup. Критерий — только HTTP-статус целевого вызова.
    Единичный `403` цели внутри контура сессии повтори прогоном той же пары до вердикта: контур свежей dev-сессии прогревается не мгновенно.

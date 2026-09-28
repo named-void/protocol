@@ -144,7 +144,7 @@ def resolve_user_ids_via_api(
     except AuthError as error:
         raise AuthError(
             f"{error}; bootstrap user {bootstrap_id} is gone from Develop (autotest cleanups remove such users) — "
-            "update the bootstrap: set UPL_DEV_BOOTSTRAP_USER_ID or replace DEFAULT_BOOTSTRAP_USER_ID in test_protocol_auth.py"
+            "update the bootstrap: set UPL_DEV_BOOTSTRAP_USER_ID or replace DEFAULT_BOOTSTRAP_USER_ID in test_dev_rights_auth.py"
         ) from error
     result: dict[str, str] = {}
     missing: set[str] = set()
@@ -227,7 +227,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         create_sessions(user_ids, base_url=args.base_url, timeout=args.timeout)
     except AuthError as error:
-        print(f"test_protocol_auth: {error}", file=sys.stderr)
+        print(f"test_dev_rights_auth: {error}", file=sys.stderr)
         return 2
     for role in sorted(missing_roles):
         print(f"skipped: {role} (no active user)")
