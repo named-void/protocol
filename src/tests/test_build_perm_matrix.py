@@ -157,12 +157,35 @@ UPDATE permission SET is_regex = true, path_pattern = 'GET /api/v1/vendors/card'
 WHERE name = 'Рекламодатели - Чтение';
 """
 
+CROSS_JOIN_FIXTURE = """\
+INSERT INTO permission (id, action, name, description, domain, is_active, is_regex, is_public, path_pattern)
+VALUES
+    ('44444444-4444-4444-4444-444444444444', 'read', 'Цели - История', NULL, 'goals-history', true, false, false, NULL),
+    ('55555555-5555-5555-5555-555555555555', 'read', 'Таргеты - История', NULL, 'targets-history', true, false, false, NULL)
+ON CONFLICT (domain, action) DO NOTHING;
+
+INSERT INTO role_permission (permission_id, role_code)
+SELECT p.id, roles.role_code
+FROM permission p
+CROSS JOIN (
+    VALUES
+        ('super_admin'),
+        ('treasurer')
+) AS roles(role_code)
+WHERE (p.domain, p.action) IN (
+    ('goals-history', 'read'),
+    ('targets-history', 'read')
+)
+ON CONFLICT (permission_id, role_code) DO NOTHING;
+"""
+
 MIGRATIONS = {
     "000001_full.up.sql": FULL_RESET,
     "000002_values.up.sql": PERMISSION_VALUES + GRANT_VALUES,
     "000003_joins.up.sql": JOIN_GRANTS,
     "000004_revokes.up.sql": REVOKES,
     "000005_renames.up.sql": RENAMES,
+    "000006_cross_join.up.sql": CROSS_JOIN_FIXTURE,
 }
 
 
@@ -208,6 +231,14 @@ class BuildPermMatrixTest(unittest.TestCase):
         self.assertEqual(
             ["treasurer"], matrix["domains"]["vendors-archive"]["delete"]["roles"]
         )
+        self.assertEqual(
+            ["super_admin", "treasurer"],
+            matrix["domains"]["goals-history"]["read"]["roles"],
+        )
+        self.assertEqual(
+            ["super_admin", "treasurer"],
+            matrix["domains"]["targets-history"]["read"]["roles"],
+        )
         self.assertTrue(matrix["domains"]["vendors"]["read"]["is_regex"])
         self.assertEqual(
             "GET /api/v1/vendors/card", matrix["domains"]["vendors"]["read"]["path_pattern"]
@@ -227,10 +258,10 @@ class BuildPermMatrixTest(unittest.TestCase):
         self.assertEqual(0, self.run_build())
         self.assertEqual(0, self.run_build(force=True))
         matrix = json.loads(self.out.read_text(encoding="utf-8"))
-        self.assertEqual("000005_renames.up.sql", matrix["last_migration"])
+        self.assertEqual("000006_cross_join.up.sql", matrix["last_migration"])
 
-    def test_grant_on_unknown_permission_fails_loudly(self) -> None:
-        (self.migrations / "000006_phantom.up.sql").write_text(
+    def test_grant_on_unknown_permission_warns_and_skips(self) -> None:
+        (self.migrations / "000007_phantom.up.sql").write_text(
             "INSERT INTO role_permission (permission_id, role_code)\n"
             "SELECT p.id, grants.role_code\n"
             "FROM permission p\n"
@@ -244,11 +275,189 @@ class BuildPermMatrixTest(unittest.TestCase):
         with contextlib.redirect_stderr(stderr):
             code = self.module.build(self.migrations, self.out, force=True)
 
-        self.assertEqual(2, code)
+        self.assertEqual(0, code)
         self.assertIn("unknown permission", stderr.getvalue())
+        matrix = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertNotIn("vendors-ghost", matrix["domains"])
+
+    def test_cross_join_unknown_scope_key_warns_and_skips(self) -> None:
+        (self.migrations / "000007_ghost_scope.up.sql").write_text(
+            "INSERT INTO role_permission (permission_id, role_code)\n"
+            "SELECT p.id, roles.role_code\n"
+            "FROM permission p\n"
+            "CROSS JOIN (\n"
+            "    VALUES\n"
+            "        ('super_admin'),\n"
+            "        ('treasurer')\n"
+            ") AS roles(role_code)\n"
+            "WHERE (p.domain, p.action) IN (\n"
+            "    ('goals-history', 'read'),\n"
+            "    ('vendors-ghost', 'read')\n"
+            ")\n"
+            "ON CONFLICT (permission_id, role_code) DO NOTHING;\n",
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = self.module.build(self.migrations, self.out, force=True)
+
+        self.assertEqual(0, code)
+        self.assertIn("unknown permission", stderr.getvalue())
+        matrix = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertNotIn("vendors-ghost", matrix["domains"])
+        self.assertEqual(
+            ["super_admin", "treasurer"],
+            matrix["domains"]["goals-history"]["read"]["roles"],
+        )
+
+    def test_domains_filter_limits_output_and_tolerates_foreign_failures(self) -> None:
+        (self.migrations / "000007_foreign.up.sql").write_text(
+            "UPDATE permission SET is_public = true WHERE domain = 'dictionaries';\n",
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = self.module.build(
+                self.migrations,
+                self.out,
+                force=True,
+                domains={"vendors", "vendors-card"},
+            )
+
+        self.assertEqual(0, code)
+        self.assertIn("unhandled statement", stderr.getvalue())
+        matrix = json.loads(self.out.read_text(encoding="utf-8"))
+        self.assertEqual(["vendors", "vendors-card"], matrix["domains_filter"])
+        self.assertEqual(["vendors", "vendors-card"], sorted(matrix["domains"]))
+        self.assertEqual(1, len(matrix["skipped"]))
+
+    def test_domains_filter_stays_loud_on_kept_domain_statement(self) -> None:
+        (self.migrations / "000007_kept.up.sql").write_text(
+            "UPDATE permission SET is_public = true WHERE domain = 'vendors';\n",
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = self.module.build(
+                self.migrations,
+                self.out,
+                force=True,
+                domains={"vendors", "vendors-card"},
+            )
+
+        self.assertEqual(2, code)
+        self.assertIn("refusing to skip", stderr.getvalue())
+
+    def test_domains_filter_stays_loud_on_unknown_scope(self) -> None:
+        (self.migrations / "000007_global.up.sql").write_text(
+            "UPDATE permission SET is_public = true;\n",
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = self.module.build(
+                self.migrations,
+                self.out,
+                force=True,
+                domains={"vendors", "vendors-card"},
+            )
+
+        self.assertEqual(2, code)
+        self.assertIn("refusing to skip", stderr.getvalue())
+
+    def test_domains_filter_stays_loud_on_or_scope(self) -> None:
+        (self.migrations / "000007_or_scope.up.sql").write_text(
+            "UPDATE permission SET is_public = true "
+            "WHERE domain = 'dictionaries' OR action = 'read';\n",
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = self.module.build(
+                self.migrations,
+                self.out,
+                force=True,
+                domains={"vendors", "vendors-card"},
+            )
+
+        self.assertEqual(2, code)
+        self.assertIn("refusing to skip", stderr.getvalue())
+
+    def test_domains_filter_stays_loud_on_nested_scope(self) -> None:
+        (self.migrations / "000007_nested_scope.up.sql").write_text(
+            "UPDATE permission SET is_public = true WHERE EXISTS (\n"
+            "    SELECT 1 FROM permission x WHERE x.domain = 'dictionaries'\n"
+            ");\n",
+            encoding="utf-8",
+        )
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = self.module.build(
+                self.migrations,
+                self.out,
+                force=True,
+                domains={"vendors", "vendors-card"},
+            )
+
+        self.assertEqual(2, code)
+        self.assertIn("refusing to skip", stderr.getvalue())
+
+    def test_cache_scope_is_not_reused_across_modes(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(
+                0,
+                self.module.build(
+                    self.migrations, self.out, force=False, domains={"vendors"}
+                ),
+            )
+        self.assertNotIn("up-to-date", stdout.getvalue())
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(0, self.module.build(self.migrations, self.out, force=False))
+        self.assertNotIn("up-to-date", stdout.getvalue())
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(0, self.module.build(self.migrations, self.out, force=False))
+        self.assertIn("up-to-date", stdout.getvalue())
+
+    def test_update_meta_by_key_and_domain_deletes(self) -> None:
+        (self.migrations / "000007_meta_ops.up.sql").write_text(
+            "UPDATE permission\n"
+            "SET is_regex = true,\n"
+            "    is_public = true,\n"
+            "    path_pattern = '\\^(?i)GET /api/v1/dictionaries(/[a-z0-9_]+)?/?\\$'\n"
+            "WHERE domain = 'vendors'\n"
+            "  AND action = 'read';\n"
+            "\n"
+            "DELETE FROM role_permission rp\n"
+            "USING permission p\n"
+            "WHERE rp.permission_id = p.id\n"
+            "  AND p.domain IN (\n"
+            "    'vendors-slim'\n"
+            "  );\n"
+            "\n"
+            "DELETE FROM permission\n"
+            "WHERE domain IN (\n"
+            "    'vendors-slim'\n"
+            ");\n",
+            encoding="utf-8",
+        )
+        self.assertEqual(0, self.run_build())
+        matrix = json.loads(self.out.read_text(encoding="utf-8"))
+        vendors_read = matrix["domains"]["vendors"]["read"]
+        self.assertTrue(vendors_read["is_public"])
+        self.assertTrue(vendors_read["is_regex"])
+        self.assertEqual(
+            "\\^(?i)GET /api/v1/dictionaries(/[a-z0-9_]+)?/?\\$",
+            vendors_read["path_pattern"],
+        )
+        self.assertNotIn("vendors-slim", matrix["domains"])
 
     def test_unhandled_statement_fails_loudly(self) -> None:
-        (self.migrations / "000006_future.up.sql").write_text(
+        (self.migrations / "000007_future.up.sql").write_text(
             "INSERT INTO role_permission SELECT * FROM vendors_backup;\n",
             encoding="utf-8",
         )

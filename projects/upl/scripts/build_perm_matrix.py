@@ -6,9 +6,17 @@ permission and role_permission) into a cache file shaped as
 ``domains -> action -> {roles, is_public, is_regex, ...}``.
 
 The replay is whitelist-driven: every statement touching permission storage
-must match a known SQL idiom, otherwise the build fails loudly. The cache is
+must match a known SQL idiom, otherwise the build fails loudly. A grant
+referencing an unknown (domain, action) is tolerated with a warning: the SQL
+INSERT..SELECT inserts zero rows, so the real database no-ops. The cache is
 rebuilt only when a newer migration appears; replay starts from the last
 migration that fully resets permission storage (TRUNCATE role_permission).
+
+With ``--domains`` the cache keeps only the requested domains. An unhandled
+statement becomes a recorded warning (``skipped``) only when its WHERE clause
+is a pure conjunction restricting it to foreign domains via ``domain = ...``
+/ ``domain IN (...)``; an OR branch, unknown scope or a kept-domain mention
+stays a loud failure, as does any full rebuild without the filter.
 """
 
 from __future__ import annotations
@@ -93,6 +101,12 @@ GRANT_TEMP_RE = re.compile(
     r"INNER JOIN permission p ON p\.domain = r\.domain AND p\.action = r\.action.*",
     re.S,
 )
+GRANT_CROSS_JOIN_HEAD_RE = re.compile(
+    r"^INSERT INTO role_permission(?:\s*\(permission_id, role_code\))?\s+"
+    r"SELECT p\.id(?:\s+AS permission_id)?,\s*\w+\.role_code\s+"
+    r"FROM permission p\s+CROSS JOIN\s*\(\s*VALUES\s*",
+    re.S,
+)
 REVOKE_USING_RE = re.compile(
     r"^DELETE FROM role_permission(?:\s+\w+)?\s+USING permission p,\s*\(\s*VALUES\s*",
     re.S,
@@ -112,7 +126,18 @@ UPDATE_ACTION_RE = re.compile(
     re.S,
 )
 UPDATE_META_RE = re.compile(
-    r"^UPDATE permission SET (?P<sets>.*?)\s+WHERE name = '(?P<name>[^']+)'$", re.S
+    r"^UPDATE\s+permission\s+SET\s+(?P<sets>.*?)\s+WHERE\s+"
+    r"(?:name\s*=\s*'(?P<name>[^']+)'"
+    r"|domain\s*=\s*'(?P<domain>[^']+)'\s+AND\s+action\s*=\s*'(?P<action>[^']+)')$",
+    re.S,
+)
+REVOKE_DOMAINS_RE = re.compile(
+    r"^DELETE FROM role_permission(?:\s+\w+)?\s+USING permission p\s+"
+    r"WHERE rp\.permission_id = p\.id\s+AND p\.domain IN \((?P<domains>[^)]*)\)$",
+    re.S,
+)
+PERM_DELETE_BY_DOMAINS_RE = re.compile(
+    r"^DELETE FROM permission\s+WHERE domain IN \((?P<domains>[^)]*)\)$", re.S
 )
 
 class MigrationError(RuntimeError):
@@ -139,9 +164,14 @@ class Replay:
 
     def grant(self, key: tuple[str, str], role: str) -> None:
         if key not in self.permissions:
-            raise MigrationError(
-                f"Grant references unknown permission {key[0]}:{key[1]}"
+            # INSERT INTO role_permission SELECT ... FROM permission inserts zero
+            # rows for a dangling (domain, action), so the real database no-ops.
+            print(
+                f"build_perm_matrix: warning: grant to unknown permission "
+                f"{key[0]}:{key[1]} (role {role}) skipped",
+                file=sys.stderr,
             )
+            return
         self.grants.setdefault(key, set()).add(role)
 
     def revoke(self, key: tuple[str, str], role: str) -> None:
@@ -345,12 +375,15 @@ class MatrixBuilder:
             self._grant_values,
             self._grant_cte_select,
             self._grant_join_select,
+            self._grant_cross_join_select,
             self._grant_temp,
             self._revoke_using,
             self._revoke_in_select,
             self._revoke_uuids,
+            self._revoke_domains,
             self._delete_permission,
             self._delete_permission_keys,
+            self._delete_permission_domains,
             self._update_action,
             self._update_meta,
         ):
@@ -451,6 +484,22 @@ class MatrixBuilder:
             self.state.grants.pop(key, None)
         return True
 
+    def _delete_permission_domains(self, statement: str) -> bool:
+        match = PERM_DELETE_BY_DOMAINS_RE.match(statement)
+        if not match:
+            return False
+        domains = {literal(value) for value in split_values(match.group("domains"))}
+        for key in [key for key in self.state.permissions if key[0] in domains]:
+            self.state.permissions.pop(key, None)
+            self.state.grants.pop(key, None)
+        for uuid in [
+            uuid
+            for uuid, key in self.state.uuid_index.items()
+            if key[0] in domains
+        ]:
+            self.state.uuid_index.pop(uuid, None)
+        return True
+
     def _delete_permission(self, statement: str) -> bool:
         match = PERM_DELETE_BY_UUIDS_RE.match(statement)
         if not match:
@@ -516,6 +565,42 @@ class MatrixBuilder:
         tail_data = self._parse_join_tail(tail) if tail else None
         self._apply_join(columns, roles_by_row, head.group("with"), tail_data)
         return True
+
+    def _grant_cross_join_select(self, statement: str) -> bool:
+        head = GRANT_CROSS_JOIN_HEAD_RE.match(statement)
+        if not head:
+            return False
+        rows_blob, columns, tail = self._split_join_tail(statement[head.end():])
+        if columns != ["role_code"]:
+            raise MigrationError(f"Unhandled cross join columns: {columns}")
+        if not tail:
+            raise MigrationError("Cross join grant without WHERE scope")
+        scope = self._cross_join_scope(tail)
+        for row in split_rows(rows_blob):
+            values = split_values(row)
+            if len(values) != 1:
+                raise MigrationError(f"Cross join row must have a single role: {row[:120]}")
+            for key in scope:
+                self.state.grant(key, literal(values[0]))
+        return True
+
+    @staticmethod
+    def _cross_join_scope(tail: str) -> list[tuple[str, str]]:
+        match = re.fullmatch(
+            r"WHERE \(p\.domain, p\.action\) IN \((?P<keys>.*)\)\s*"
+            r"(?:ON CONFLICT \(permission_id, role_code\) DO NOTHING)?",
+            tail.strip(),
+            re.S,
+        )
+        if not match:
+            raise MigrationError(f"Unhandled cross join where: {tail[:160]}")
+        scope: list[tuple[str, str]] = []
+        for row in split_rows(match.group("keys")):
+            values = split_values(row)
+            if len(values) != 2:
+                raise MigrationError(f"Malformed cross join key row: {row[:120]}")
+            scope.append((literal(values[0]), literal(values[1])))
+        return scope
 
     @staticmethod
     def _split_join_tail(blob: str) -> tuple[str, list[str], str | None]:
@@ -694,6 +779,15 @@ class MatrixBuilder:
             self.state.grants.pop(key, None)
         return True
 
+    def _revoke_domains(self, statement: str) -> bool:
+        match = REVOKE_DOMAINS_RE.match(statement)
+        if not match:
+            return False
+        domains = {literal(value) for value in split_values(match.group("domains"))}
+        for key in [key for key in self.state.grants if key[0] in domains]:
+            self.state.grants.pop(key, None)
+        return True
+
     # ----------------------------------------------------------------- update
 
     def _update_action(self, statement: str) -> bool:
@@ -718,8 +812,32 @@ class MatrixBuilder:
         match = UPDATE_META_RE.match(statement)
         if not match:
             return False
+        assignments = self._parse_permission_assignments(match.group("sets"))
+        if match.group("name"):
+            targets = [
+                permission
+                for permission in self.state.permissions.values()
+                if permission.name == match.group("name")
+            ]
+            target_label = f"name {match.group('name')!r}"
+        else:
+            key = (match.group("domain"), match.group("action"))
+            permission = self.state.permissions.get(key)
+            targets = [permission] if permission else []
+            target_label = f"{key[0]}:{key[1]}"
+        if not targets:
+            raise MigrationError(
+                f"UPDATE permission matched no known permission by {target_label}"
+            )
+        for permission in targets:
+            for column, value in assignments.items():
+                setattr(permission, column, value)
+        return True
+
+    @staticmethod
+    def _parse_permission_assignments(sets: str) -> dict[str, str | bool | None]:
         assignments: dict[str, str | bool | None] = {}
-        for pair in split_values(match.group("sets")):
+        for pair in split_values(sets):
             column, value = pair.split("=", 1)
             column = column.strip()
             value = value.strip()
@@ -729,27 +847,20 @@ class MatrixBuilder:
                 assignments[column] = literal(value)
             else:
                 raise MigrationError(f"Unhandled permission column update: {column}")
-        updated = 0
-        for permission in self.state.permissions.values():
-            if permission.name != match.group("name"):
-                continue
-            for column, value in assignments.items():
-                setattr(permission, column, value)
-            updated += 1
-        if not updated:
-            raise MigrationError(
-                f"UPDATE permission matched no known permission named {match.group('name')!r}"
-            )
-        return True
+        return assignments
 
     # ----------------------------------------------------------------- output
 
-    def to_dict(self, migrations_dir: str, last_migration: str) -> dict:
-        domains: dict[str, dict[str, dict]] = {}
+    def to_dict(
+        self, migrations_dir: str, last_migration: str, domains: set[str] | None = None
+    ) -> dict:
         keys = set(self.state.permissions) | set(self.state.grants)
+        if domains is not None:
+            keys = {key for key in keys if key[0] in domains}
+        domain_cells: dict[str, dict[str, dict]] = {}
         for domain, action in sorted(keys):
             permission = self.state.permissions.get((domain, action))
-            domains.setdefault(domain, {})[action] = {
+            domain_cells.setdefault(domain, {})[action] = {
                 "roles": sorted(self.state.grants.get((domain, action), set())),
                 "is_public": permission.is_public if permission else False,
                 "is_regex": permission.is_regex if permission else False,
@@ -758,15 +869,113 @@ class MatrixBuilder:
                 "name": permission.name if permission else "",
             }
         all_roles = sorted(
-            {role for roles in self.state.grants.values() for role in roles}
+            {
+                role
+                for key in keys
+                for role in self.state.grants.get(key, set())
+            }
         )
-        return {
+        document = {
             "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "migrations_dir": migrations_dir,
             "last_migration": last_migration,
             "roles": all_roles,
-            "domains": domains,
+            "domains": domain_cells,
         }
+        if domains is not None:
+            document["domains_filter"] = sorted(domains)
+        return document
+
+
+def _top_level_junctions(clause: str) -> set[str]:
+    """AND/OR keywords at parenthesis depth 0 outside string literals."""
+    found: set[str] = set()
+    depth = 0
+    in_string = False
+    index = 0
+    upper = clause.upper()
+    while index < len(clause):
+        char = clause[index]
+        if in_string:
+            if char == "'" and clause[index + 1: index + 2] == "'":
+                index += 2
+                continue
+            if char == "'":
+                in_string = False
+        elif char == "'":
+            in_string = True
+        elif char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0 and char in "AO":
+            for keyword in ("AND", "OR"):
+                if upper.startswith(keyword, index):
+                    before = clause[index - 1: index]
+                    after = clause[index + len(keyword): index + len(keyword) + 1]
+                    if not (before.isalnum() or before == "_") and not (
+                        after.isalnum() or after == "_"
+                    ):
+                        found.add(keyword)
+        index += 1
+    return found
+
+
+def _foreign_scoped(statement: str, domains: set[str]) -> bool:
+    """True when the WHERE clause is a pure conjunction whose top-level
+    ``domain = 'x'`` / ``domain IN ('a', ...)`` restrictions name only foreign
+    domains. OR branches, nested conditions (EXISTS, subqueries, extra
+    parentheses) and other unknown shapes are never safe to skip."""
+    where = re.search(r"\bWHERE\b", statement, re.I)
+    if not where:
+        return False
+    clause = statement[where.end():]
+    if "OR" in _top_level_junctions(clause):
+        return False
+    scoped: list[str] = []
+    top: list[str] = []
+    group: list[str] = []
+    group_is_in = False
+    depth = 0
+    in_string = False
+    index = 0
+    while index < len(clause):
+        char = clause[index]
+        if in_string:
+            if char == "'" and clause[index + 1: index + 2] == "'":
+                index += 2
+                continue
+            if char == "'":
+                in_string = False
+        elif char == "'":
+            in_string = True
+        elif char == "(":
+            depth += 1
+            if depth == 1:
+                group = []
+                group_is_in = bool(re.search(r"\bdomain\s+IN\s*$", "".join(top).rstrip(), re.I))
+                index += 1
+                continue
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                if group_is_in:
+                    if "(" in group:
+                        return False
+                    scoped.extend(re.findall(r"'([^']*)'", "".join(group)))
+                top.append(" ")
+                index += 1
+                continue
+        if depth == 0:
+            top.append(char)
+        else:
+            group.append(char)
+        index += 1
+    for match in re.finditer(r"\bdomain\s*=\s*'([^']+)'", "".join(top), re.I):
+        scoped.append(match.group(1))
+    if not scoped:
+        return False
+    return not (set(scoped) & domains)
 
 
 def migration_files(migrations_dir: Path) -> list[tuple[str, Path]]:
@@ -794,26 +1003,52 @@ def replay_plan(files: list[tuple[str, Path]]) -> list[tuple[str, list[str]]]:
     return plan
 
 
-def build(migrations_dir: Path, out_path: Path, force: bool) -> int:
+def build(
+    migrations_dir: Path, out_path: Path, force: bool, domains: set[str] | None = None
+) -> int:
     files = migration_files(migrations_dir)
     last_migration = files[-1][1].name
-    if not force and out_path.exists():
+    # Full builds reuse a fresh unfiltered cache; domain-filtered builds always
+    # replay so a cache with another filter is never mistaken for fresh.
+    if not force and domains is None and out_path.exists():
         try:
             cached = json.loads(out_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             cached = None
-        if isinstance(cached, dict) and cached.get("last_migration") == last_migration:
+        if (
+            isinstance(cached, dict)
+            and cached.get("last_migration") == last_migration
+            and cached.get("domains_filter") is None
+        ):
             print(f"up-to-date {last_migration}")
             return 0
     builder = MatrixBuilder()
+    skipped: list[str] = []
     for migration_name, statements in replay_plan(files):
         for statement in statements:
             try:
                 builder.apply(migration_name, statement)
             except MigrationError as error:
-                print(f"build_perm_matrix: {error}", file=sys.stderr)
-                return 2
-    document = builder.to_dict(str(migrations_dir), last_migration)
+                if domains is None:
+                    print(f"build_perm_matrix: {error}", file=sys.stderr)
+                    return 2
+                if not _foreign_scoped(statement, domains):
+                    print(
+                        f"build_perm_matrix: {migration_name}: unhandled statement "
+                        f"scope is unknown or touches kept domains {sorted(domains)}, "
+                        f"refusing to skip:\n{statement[:400]}",
+                        file=sys.stderr,
+                    )
+                    return 2
+                skipped.append(f"{migration_name}: {error}")
+                print(
+                    f"build_perm_matrix: warning: {migration_name}: {error}; "
+                    "statement skipped in domain-filtered mode, matrix may be incomplete",
+                    file=sys.stderr,
+                )
+    document = builder.to_dict(str(migrations_dir), last_migration, domains=domains)
+    if skipped:
+        document["skipped"] = skipped
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
         "w", encoding="utf-8", dir=out_path.parent, delete=False
@@ -822,11 +1057,11 @@ def build(migrations_dir: Path, out_path: Path, force: bool) -> int:
         handle.write("\n")
         temporary = Path(handle.name)
     temporary.replace(out_path)
-    domains = len(document["domains"])
     cells = sum(len(actions) for actions in document["domains"].values())
     print(
-        f"built {last_migration} domains={domains} cells={cells} "
+        f"built {last_migration} domains={len(document['domains'])} cells={cells} "
         f"roles={len(document['roles'])}"
+        + (f" skipped={len(skipped)}" if skipped else "")
     )
     return 0
 
@@ -838,11 +1073,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", required=True, type=Path,
                         help="cache file path (runtime perimeter, not versioned)")
     parser.add_argument("--force", action="store_true", help="rebuild even when fresh")
+    parser.add_argument(
+        "--domains",
+        help="comma-separated domains to keep in the cache; unhandled statements "
+        "outside the replay become warnings instead of failures",
+    )
     args = parser.parse_args(argv)
     if not args.migrations.is_dir():
         print(f"build_perm_matrix: no such directory {args.migrations}", file=sys.stderr)
         return 2
-    return build(args.migrations, args.out, args.force)
+    domains = None
+    if args.domains:
+        domains = {part.strip() for part in args.domains.split(",") if part.strip()}
+        if not domains:
+            print("build_perm_matrix: --domains resolved to an empty set", file=sys.stderr)
+            return 2
+    return build(args.migrations, args.out, args.force, domains)
 
 
 if __name__ == "__main__":
