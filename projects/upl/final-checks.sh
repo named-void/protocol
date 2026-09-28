@@ -404,6 +404,42 @@ else
   status "migration up/down" "пропущено: в диффе задачи нет миграций (база: ${BASE_REF:-не определена})"
 fi
 
+# Интеграционные тесты сервиса: цель test-integration есть не во всех сервисах,
+# поэтому её отсутствие — пропуск, а не блокер. Тесты ходят в стенд (DSN из
+# configs/.env: БД, Redis), поднятый снаружи; как и migration-check, проверка
+# не поднимает стенд сама и падает с внятной причиной в логе.
+run_integration_tests() {
+  if [[ -n "${FINAL_CHECKS_SKIP_INTEGRATION:-}" ]]; then
+    status "make test-integration" "пропущено: FINAL_CHECKS_SKIP_INTEGRATION задан"
+    return
+  fi
+  if ! make -n test-integration >/dev/null 2>&1; then
+    status "make test-integration" "пропущено: цель test-integration не найдена в Makefile"
+    return
+  fi
+
+  # configs/.env — gitignored, в task-worktree и в disposable verify-worktree его
+  # нет, а интеграционные тесты читают DSN стенда именно оттуда (auth-service
+  # дополнительно сам ставит CONFIG_PATH на configs/.env по cwd). Копируем конфиг
+  # из основного дерева сервиса на прогон и удаляем после, чтобы не ломать
+  # чистоту дерева и candidate purity.
+  local copied_env=""
+  if [[ ! -f "$SERVICE_ROOT/configs/.env" && -f "$SERVICE_MAIN_ROOT/configs/.env" ]]; then
+    mkdir -p "$SERVICE_ROOT/configs"
+    cp "$SERVICE_MAIN_ROOT/configs/.env" "$SERVICE_ROOT/configs/.env"
+    copied_env=1
+  fi
+
+  # Цель user-service не передаёт -count=1 (у auth-service передаёт): без сброса
+  # кэша go test может отдать зелёный из кэша, не подключаясь к стенду.
+  go clean -testcache
+  run_check "make test-integration" "make-test-integration.log" make test-integration
+
+  [[ -n "$copied_env" ]] && rm -f "$SERVICE_ROOT/configs/.env"
+}
+
+run_integration_tests
+
 if [[ "$MODE" == "verify" ]]; then
   for relative_path in "${VERIFY_SEED_PATH_LIST[@]}"; do
     source_seed="$ORIGINAL_SERVICE_ROOT/$relative_path"
