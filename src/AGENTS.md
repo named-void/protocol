@@ -52,7 +52,7 @@
 
 ## Tech-review
 
-- Техническое ревью BE-изменений: при запросе `tech-review` используй файл `~/_dev/git/obs/upl/templates/templ-service-UPL-1061/tech-reviewer.md` (ветка UPL-1061); опционально пользователь указывает короткие имена файлов-правил.
+- Техническое ревью BE-изменений: при запросе `tech-review` используй файл `~/_dev/git/obs/upl/templates/templ-service-UPL-1061/skills/tech-reviewer/tech-reviewer.md` (ветка UPL-1061); опционально пользователь указывает короткие имена файлов-правил.
   После влития ветки в master замени путь ссылкой GitLab.
 
 ## Озвучка
