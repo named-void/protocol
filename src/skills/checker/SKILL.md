@@ -24,7 +24,9 @@ description: 'Триггеры: явный запрос read-only проверк
 
 Передай mode-specific view правил и обязательных артефактов через manifest и назначь ему абсолютные пути `progress` и `result`; не дублируй этот контекст отдельными mutable-входами.
 
-До чтения diff проверь `input_digest`, затем убедись, что `BASE` и `CANDIDATE` в каждой записи `repositories` разрешаются в зафиксированные коммиты, Git trees и `HEAD` совпадают с manifest, а worktree clean.
+До чтения diff проверь `input_digest`: пересчитай SHA-256 canonical JSON объекта манифеста без ключей `input_digest`, `progress` и `result` и сверь с переданным значением.
+  Формула сериализации - `json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))`.
+  Затем убедись, что `BASE` и `CANDIDATE` в каждой записи `repositories` разрешаются в зафиксированные коммиты, Git trees и `HEAD` совпадают с manifest, а worktree clean.
 Для полного прохода проверь также, что `BASE` является предком `CANDIDATE`.
 В `requirements-fix` при переданном `CHECKED_TREE` вместо ancestry сверь `BASE^{tree}` с `CHECKED_TREE`. Проверяй каждый версионируемый результат по Git-объекту `CANDIDATE`, не переключая ветку.
 
