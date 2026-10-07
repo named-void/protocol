@@ -15,7 +15,7 @@
 ## Локальная инфраструктура и сквозной прогон через gateway
 
 - Инфраструктура - один постоянный compose-блок `upl-infra` (`projects/upl/infra/compose.yaml`):
-  postgres 15 (`upl-db`, host 5432: auth, user, ord), postgres 17 (`upl-db17`, host 5433: catalog, report, tracking),
+  единый postgres 17 (контейнер `db`, host 5432: auth, user, catalog, ord, report, tracking),
   redis 6379, kafka 9092/9094, rabbitmq 5672, minio 9000, jaeger 16686, envoy 8110.
   Подъём: `upl-infra.sh infra up` (скрипт рядом с профилем, `projects/upl/infra/`).
 - Экземпляры сервисов поднимает `upl-infra.sh svc up <svc>` на хосте из основного чекаута:
@@ -31,15 +31,15 @@
 - Финальный шаг приёмки до `task close` - `upl-infra.sh accept UPL-XXXX`: поднимает envoy с конфигом
   из worktree `envoy-UPL-XXXX` (если есть) и экземпляры всех затронутых задачей сервисов,
   печатает ссылки на swagger-UI изменённых методов.
-  Список изменённых методов берётся из diff `api/docs/swagger.json` обоих деревьев, для bff - из diff `aggregation.yaml`;
-  нет исходника списка - печатается только ссылка на swagger-UI сервиса.
+  Изменённые методы - diff `api/docs/swagger.json` обоих деревьев (для bff - diff `aggregation.yaml`);
+  спеки совпадают - строка сервиса пропускается, спека не сгенерирована - ссылка с пометкой ручной сверки.
 - Данные каталога для фильтров засевай `services/catalog-db-smoke.sql`: `upl-infra.sh seed catalog`.
 - Envoy: file provider рендер-копии в `.infra/envoy/` подхватывает без рестарта; `svc up/down` сами
   переписывают `backends.yaml` на порты живых экземпляров (экземпляр задачи приоритетнее develop).
 - Локальную сессию получай `POST /auth/dev/login` с телом `{"role": "<код роли>"}` - локально роль
   в запросе передаётся, в отличие от develop.
   Роль бери с реальным доступом к проверяемому методу: у `reg` почти нет доступов, у `super_admin` почти всё;
-  доступы смотри в `role_permission` БД auth (`upl-db`).
+  доступы смотри в `role_permission` БД auth (контейнер `db`).
 - Сквозной прогон против envoy: методы bff и новые маршруты проверяй через `http://localhost:8110`
   до постановки MR; primary при недостижимости bff принимает запрос сам и молча игнорирует не свои параметры -
   каждый новый фильтр bff проверяй отдельным запросом через gateway.
@@ -48,7 +48,11 @@
   Задача с bff-блоком в `aggregation.yaml` обязана включать правило envoy (см. профиль upl-services) -
   отсутствие правила ловит только этот прогон.
 - `final-checks.sh` для проверки миграций берёт контейнер из `DB_CONTAINER`,
-  иначе находит `upl-db`/`upl-db17` общего блока сам.
+  иначе находит общий postgres `db` стенда сам.
+- Креды и туннель develop-postgres: `projects/upl/.data/config.toml`, секция `[develop_db]`
+  (рыба и рецепт дампа/заливки - соседний `develop-db.env.example`; .data gitignored).
+  Строка подключения к develop postgres собирается только в read-only:
+  `PGOPTIONS='-c default_transaction_read_only=on'` перед psql/pg_dump; запись на develop из этих сессий запрещена.
 
 ## Dev-авторизация для `test-dev-rights`
 
