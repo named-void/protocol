@@ -14,6 +14,8 @@
 #
 # Usage: upl-infra.sh <команда>
 #   infra up|down|status [--with-keycloak]
+#   svc up | svc down — все сервисы из develop: up разворачивает develop-экземпляры,
+#                       down гасит их; задачные экземпляры не затрагиваются
 #   svc up|down|logs|status <svc> [--task UPL-XXXX | --branch <b> --suffix <N>] [--proc api|worker|consumer|poller]
 #   svc migrate <svc> [--task ...] up|down
 #   seed catalog
@@ -491,6 +493,33 @@ cmd_svc_down() {
     envoy_rewrite_backends_live
   fi
   info "$name остановлен"
+}
+
+cmd_svc_up_all() { # develop-экземпляры всех сервисов; отказ одного не мешает остальным
+  local failed="" svc
+  for svc in $KNOWN_SERVICES; do
+    ( cmd_svc_up "$svc" ) || failed="$failed $svc"
+  done
+  [ -z "$failed" ] || die "не поднялись:$failed — причины выше; остальные экземпляры работают"
+}
+
+cmd_svc_down_all() { # гасит develop-экземпляры всех сервисов; задачные экземпляры не трогает
+  local svc any=0
+  for svc in $KNOWN_SERVICES; do
+    if instance_running "$svc"; then
+      stop_instance "$svc"
+      info "$svc остановлен"
+      any=1
+    else
+      stop_instance "$svc" # чистка устаревших pid-файлов
+    fi
+  done
+  if [ "$any" = "1" ] && docker ps --format '{{.Names}}' | grep -qx envoy; then
+    envoy_rewrite_backends_live
+  fi
+  if [ "$any" = "0" ]; then
+    info "запущенных develop-экземпляров нет"
+  fi
 }
 
 cmd_svc_status() {
@@ -1017,8 +1046,8 @@ case "${1:-}" in
       up|down|logs|migrate)
         s="${1:-}"; shift || true
         case "$action" in
-          up) cmd_svc_up "$s" "$@" ;;
-          down) cmd_svc_down "$s" "$@" ;;
+          up) if [ -z "$s" ]; then cmd_svc_up_all; else cmd_svc_up "$s" "$@"; fi ;;
+          down) if [ -z "$s" ]; then cmd_svc_down_all; else cmd_svc_down "$s" "$@"; fi ;;
           logs) cmd_svc_logs "$s" "$@" ;;
           migrate) cmd_svc_migrate "$s" "$@" ;;
         esac ;;
