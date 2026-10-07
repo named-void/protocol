@@ -18,6 +18,7 @@
 #   seed catalog
 #   accept <UPL-XXXX>
 #   task close <UPL-XXXX>
+#   dev sync|check  — синхронизация/отчёт локальных БД с develop postgres (read-only)
 #   doctor
 set -u
 
@@ -873,7 +874,7 @@ $d: $action; изменившихся таблиц нет"
     # схема совпадает: перелив данных только при несовпадении строк хотя бы одной таблицы
     # (develop против локального снапшота, а не локальное с локальным)
     local diff_tables
-    diff_tables="$(comm -3 <(dev_table_counts "$d" dev | sort) "$before_f" | awk -F'|' '{print $1}' | tr -d ' ' | tr '\n' ' ')"
+    diff_tables="$(comm -3 <(dev_table_counts "$d" dev | sort) "$before_f" | awk -F'|' '{gsub(/[ \t]/, "", $1); print $1}' | sort -u | tr '\n' ' ')"
     if [ -n "$(echo $diff_tables)" ]; then
       action="обновлена (перелив данных)"
       info "шаг 4: $d - расхождение строк в таблицах:$diff_tables - перелив данных"
