@@ -1,0 +1,716 @@
+#!/usr/bin/env bash
+# Единая локальная инфраструктура UPL: общий compose-блок (db, db17, redis,
+# kafka, rabbitmq, minio, jaeger, envoy) + управление экземплярами сервисов
+# на хосте, поимённо по ветке запуска.
+#
+# Экземпляры сервисов:
+#   develop (без суффикса)  — постоянные, основной чекаут сервиса, канонический
+#                             порт, общая БД без суффикса; авто-рестарт на новый
+#                             код (опрос изменений исходников).
+#   задачи (суффикс ключа)  — worktree services/<repo>-UPL-<N>, ветка
+#                             feature/UPL-<N>, порт 9000+(порт-8000), БД
+#                             <db>_<N>; снимаются task close.
+#
+# Usage: upl-infra.sh <команда>
+#   infra up|down|status [--with-keycloak]
+#   svc up|down|logs|status <svc> [--task UPL-XXXX | --branch <b> --suffix <N>] [--proc api|worker|consumer|poller]
+#   svc migrate <svc> [--task ...] up|down
+#   seed catalog
+#   accept <UPL-XXXX>
+#   task close <UPL-XXXX>
+#   doctor
+set -u
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SELF="$SCRIPT_DIR/$(basename "$0")"
+UPL_HOME="${UPL_HOME:-$HOME/_dev/git/obs/upl}"
+RT="$UPL_HOME/.infra"
+COMPOSE_FILE="$SCRIPT_DIR/compose.yaml"
+export PATH="/usr/local/go/bin:$HOME/go/bin:/opt/homebrew/bin:$PATH"
+
+die() { printf 'ошибка: %s\n' "$1" >&2; exit 1; }
+info() { printf '%s\n' "$1"; }
+
+# ── Реестр сервисов ──────────────────────────────────────────────────────────
+
+KNOWN_SERVICES="auth user catalog report tracking ord bff"
+
+svc_repo() {
+  case "$1" in
+    auth) echo auth-service ;; user) echo user-service ;;
+    catalog) echo catalog-service ;; report) echo report-service ;;
+    tracking) echo tracking-service ;; ord) echo ord-service ;; bff) echo bff ;;
+    *) return 1 ;;
+  esac
+}
+
+svc_port() {
+  case "$1" in
+    auth) echo 8100 ;; user) echo 8101 ;; catalog) echo 8102 ;;
+    report) echo 8103 ;; tracking) echo 8108 ;; ord) echo 8666 ;; bff) echo 8113 ;;
+  esac
+}
+
+# Какой общий postgres держит основную БД сервиса (пусто — БД нет).
+svc_dbhost() {
+  case "$1" in
+    auth|user|ord) echo db ;; catalog|report|tracking) echo db17 ;; bff) return 1 ;;
+  esac
+}
+
+svc_dbname() {
+  case "$1" in
+    auth) echo auth ;; user) echo user ;; ord) echo ord ;;
+    catalog) echo catalog ;; report) echo report ;; tracking) echo tracking ;;
+  esac
+}
+
+# ── Состояние экземпляров ────────────────────────────────────────────────────
+
+pidfile() { printf '%s/run/%s.pid' "$RT" "$1"; }
+childfile() { printf '%s/run/%s.child' "$RT" "$1"; }
+logfile() { printf '%s/log/%s.log' "$RT" "$1"; }
+envfile() { printf '%s/env/%s.env' "$RT" "$1"; }
+
+# PID в pidfile жив и действительно наш супервизор (защита от переиспользованного PID
+# и от ложного совпадения имени-префикса: auth vs auth-1226).
+pid_is_supervisor() { # <pid> <name>
+  ps -p "$1" -o command= 2>/dev/null | grep -q "__supervisor $2 "
+}
+
+instance_running() {
+  local f pid
+  f="$(pidfile "$1")"
+  [ -f "$f" ] || return 1
+  pid="$(cat "$f" 2>/dev/null)"
+  [ -n "$pid" ] && pid_is_supervisor "$pid" "$1"
+}
+
+# Порт экземпляра сервиса с учётом поднятых экземпляров задачи (они приоритетны).
+live_port() {
+  local p
+  p="$(instance_task_port "$1")"
+  [ -n "$p" ] && { echo "$p"; return; }
+  echo "$(svc_port "$1")"
+}
+
+peer_url() { printf 'http://localhost:%s' "$(live_port "$1")"; }
+
+port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -sTCP:LISTEN 2>/dev/null | grep -q .; }
+
+# ── Окружение экземпляра ─────────────────────────────────────────────────────
+
+env_set() { # <file> <key> <value>
+  grep -v "^$2=" "$1" > "$1.tmp" 2>/dev/null
+  printf '%s=%s\n' "$2" "$3" >> "$1.tmp"
+  mv "$1.tmp" "$1"
+}
+
+# Рендерит .env экземпляра из configs/.env.example репо + общие оверрайды.
+render_env() { # <svc> <env-path-out> <http-port> <db-name> [task 0|1]
+  local svc="$1" out="$2" port="$3" dbname="$4" is_task="${5:-0}"
+  local repo src dbh dbport
+  repo="$UPL_HOME/services/$(svc_repo "$svc")"
+  src="$repo/configs/.env.example"
+  [ -f "$src" ] || die "$src не найден"
+  cp "$src" "$out"
+  dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
+  dbport=5432; [ "$dbh" = "db17" ] && dbport=5433
+  env_set "$out" HTTP_PORT "$port"
+  if [ -n "$dbh" ]; then
+    env_set "$out" DB_HOST localhost
+    env_set "$out" DB_PORT "$dbport"
+    env_set "$out" DB_NAME "$dbname"
+  fi
+  env_set "$out" REDIS_HOST localhost
+  env_set "$out" REDIS_PORT 6379
+  env_set "$out" TRACING_HOST localhost
+  env_set "$out" TRACING_PORT 4317
+  env_set "$out" SWAGGER_ENABLED true
+  case "$svc" in
+    auth)
+      env_set "$out" AUTH_SIGNING_KEY "${AUTH_SIGNING_KEY:-upl-local-dev-signing-key}"
+      env_set "$out" DEV_LOGIN_ENABLED true
+      env_set "$out" USER_SERVICE_BASE_URL "$(peer_url user)" ;;
+    user)
+      env_set "$out" KAFKA_BROKERS localhost:9094
+      env_set "$out" CATALOG_SERVICE_BASE_URL "$(peer_url catalog)" ;;
+    catalog)
+      env_set "$out" KAFKA_BROKERS localhost:9094
+      env_set "$out" USER_SERVICE_BASE_URL "$(peer_url user)"
+      env_set "$out" RABBITMQ_ENABLED true
+      env_set "$out" RABBITMQ_URL "amqp://guest:guest@localhost:5672/" ;;
+    report)
+      env_set "$out" KAFKA_BROKERS localhost:9094
+      env_set "$out" USER_SERVICE_BASE_URL "$(peer_url user)" ;;
+    tracking)
+      env_set "$out" KAFKA_BROKERS localhost:9094
+      env_set "$out" USER_SERVICE_BASE_URL "$(peer_url user)"
+      env_set "$out" CATALOG_SERVICE_BASE_URL "$(peer_url catalog)" ;;
+    ord)
+      env_set "$out" CATALOG_SERVICE_BASE_URL "$(peer_url catalog)" ;;
+    bff)
+      env_set "$out" USER_SERVICE_URL "$(peer_url user)"
+      env_set "$out" CATALOG_SERVICE_URL "$(peer_url catalog)"
+      env_set "$out" ORD_SERVICE_URL "$(peer_url ord)"
+      env_set "$out" AUTH_SERVICE_URL "$(peer_url auth)" ;;
+  esac
+}
+
+# ── БД ───────────────────────────────────────────────────────────────────────
+
+psql_db() { # <dbhost> <dbname> <sql>
+  docker exec "upl-$1" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$2" -c "$3"
+}
+
+ensure_db() { # <dbhost> <dbname>
+  local n
+  n="$(docker exec "upl-$1" psql -X -tA -U postgres -d postgres -c "SELECT 1 FROM pg_database WHERE datname='$2'" 2>/dev/null | tr -d '[:space:]')"
+  [ "$n" = "1" ] && return 0
+  docker exec "upl-$1" psql -X -q -U postgres -d postgres -c "CREATE DATABASE \"$2\"" || die "не создана БД $2 на upl-$1"
+}
+
+drop_db() { # <dbhost> <dbname>
+  docker exec "upl-$1" psql -X -q -U postgres -d postgres -c "DROP DATABASE IF EXISTS \"$2\" WITH (FORCE)"
+}
+
+migrate_applied_version() { # <dbhost> <dbname> → число или 0
+  docker exec "upl-$1" psql -X -tA -U postgres -d "$2" -c "SELECT version FROM schema_migrations" 2>/dev/null | tr -d '[:space:]' || true
+}
+
+run_migrate() { # <src-dir> <env-file> up|down
+  ( cd "$1" && CONFIG_PATH="$2" go run ./cmd/migrate -direction "$3" >/dev/null ) || die "миграции ($3) упали в $1"
+}
+
+max_migration() { # <src-dir> → номер последней up-миграции или 0
+  ls "$1/migrations"/*.up.sql 2>/dev/null | sed 's!.*/!!;s/_.*//' | sort -n | tail -1
+}
+
+# ── Супервизор экземпляра ────────────────────────────────────────────────────
+
+src_checksum() { # <src-dir> <env-file>
+  { find "$1" -type f \( -name '*.go' -o -name '*.sql' -o -name '*.yaml' -o -name '*.yml' \) \
+      -not -path '*/.git/*' -exec cksum {} \; ; cksum "$2" ; } 2>/dev/null | cksum
+}
+
+cmd_supervisor() { # __supervisor <name> <src> <env> <proc>
+  local name="$1" src="$2" env="$3" proc="$4"
+  local child="" last="" sum
+  trap ' [ -n "$child" ] && { pkill -P "$child" 2>/dev/null; kill "$child" 2>/dev/null; }; exit 0 ' TERM INT
+  cd "$src" || exit 1
+  export CONFIG_PATH="$env"
+  while :; do
+    sum="$(src_checksum "$src" "$env")"
+    if [ -n "$last" ] && [ "$sum" != "$last" ] && [ -n "$child" ]; then
+      printf '[%s] изменения исходников — рестарт\n' "$(date '+%H:%M:%S')" >> "$(logfile "$name")"
+      pkill -P "$child" 2>/dev/null
+      kill "$child" 2>/dev/null
+      wait "$child" 2>/dev/null
+      child=""
+    fi
+    last="$sum"
+    if [ -z "$child" ] || ! kill -0 "$child" 2>/dev/null; then
+      printf '[%s] старт: go run ./cmd/%s\n' "$(date '+%H:%M:%S')" "$proc" >> "$(logfile "$name")"
+      go run "./cmd/$proc" >> "$(logfile "$name")" 2>&1 &
+      child=$!
+      printf '%s' "$child" > "$(childfile "$name")"
+    fi
+    sleep 5
+  done
+}
+
+stop_instance() { # <name>
+  local pid child i
+  if [ -f "$(pidfile "$1")" ]; then
+    pid="$(cat "$(pidfile "$1")")"
+    if pid_is_supervisor "$pid" "$1"; then
+      kill "$pid" 2>/dev/null
+      for i in 1 2 3 4 5 6 7 8 9 10; do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+      kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null
+    fi
+  fi
+  if [ -f "$(childfile "$1")" ]; then
+    child="$(cat "$(childfile "$1")")"
+    pkill -P "$child" 2>/dev/null
+    kill "$child" 2>/dev/null
+  fi
+  rm -f "$(pidfile "$1")" "$(childfile "$1")"
+}
+
+# ── Именование задачи ────────────────────────────────────────────────────────
+
+task_suffix() { # ключ/ветка → числовой суффикс
+  printf '%s' "$1" | sed 's/.*UPL-//;s/[^0-9].*//'
+}
+
+worktree_path() { # <svc> <sfx> → каталог worktree
+  printf '%s/services/%s-UPL-%s' "$UPL_HOME" "$(svc_repo "$1")" "$2"
+}
+
+instance_names() { # <svc> → имена живых/зафиксированных экземпляров (develop + задачи)
+  local f base
+  echo "$1"
+  for f in "$RT"/run/"$1"-*.pid; do
+    [ -e "$f" ] || continue
+    base="$(basename "$f" .pid)"
+    echo "$base"
+  done
+}
+
+# ── Команды: infra ───────────────────────────────────────────────────────────
+
+envoy_render_from() { # <src-dir> — config + standalone из чекаута, .eg (сертификаты) сохраняется
+  local src="$1"
+  [ -d "$src/config" ] || die "$src/config не найден"
+  rm -rf "$RT/envoy/config" "$RT/envoy/standalone.yaml"
+  mkdir -p "$RT/envoy/.eg"
+  cp -R "$src/config" "$RT/envoy/config"
+  cp "$src/standalone.yaml" "$RT/envoy/standalone.yaml"
+  envoy_patch_standalone
+  envoy_rewrite_backends_live
+}
+
+envoy_render_develop() { # рендер конфига envoy из основного чекаута services/envoy
+  envoy_render_from "$UPL_HOME/services/envoy"
+}
+
+envoy_patch_standalone() {
+  sed -i '' -e 's|- \./config|- /workspace/config|' \
+            -e 's|^      host: {}|      host:\n        configHome: /workspace/.eg\n        dataHome: /workspace/.eg|' \
+    "$RT/envoy/standalone.yaml"
+}
+
+# Переписывает backends.yaml: 127.0.0.1 → host.docker.internal, порт каждого
+# backend — порт живого экземпляра (задача приоритетна, иначе develop-канон).
+# Пары "backend=порт" читает из файла $RT/envoy/.ports; нет пары — порт не меняется.
+envoy_backends_python() {
+  python3 - "$RT/envoy/config/backends.yaml" "$RT/envoy/.ports" <<'PY'
+import re, sys
+path, pairs_path = sys.argv[1], sys.argv[2]
+ports = {}
+for line in open(pairs_path):
+    line = line.strip()
+    if not line or "=" not in line:
+        continue
+    k, v = line.rsplit("=", 1)
+    ports[k] = int(v)
+text = open(path).read()
+blocks = re.split(r"\n---\n", text)
+out = []
+for b in blocks:
+    m = re.search(r"kind: Backend\nmetadata:\n  name: (\S+)", b)
+    if not m:
+        out.append(b)
+        continue
+    if m.group(1) in ports:
+        port = ports[m.group(1)]
+        b = re.sub(r"- (?:ip:\n\s+address: 127\.0\.0\.1|fqdn:\n\s+hostname: host\.docker\.internal)\n\s+port: \d+",
+                   f"- fqdn:\n        hostname: host.docker.internal\n        port: {port}", b)
+    else:
+        b = re.sub(r"- ip:\n(\s+)address: 127\.0\.0\.1\n(\s+)port: (\d+)",
+                   lambda mm: f"- fqdn:\n{mm.group(1)}hostname: host.docker.internal\n{mm.group(2)}port: {mm.group(3)}", b)
+    out.append(b)
+open(path, "w").write("\n---\n".join(out))
+PY
+}
+
+compose() { # docker compose с обязательным UPL_ENVOY_DIR
+  [ -d "$RT/envoy/config" ] || envoy_render_develop
+  mkdir -p "$RT/envoy/.eg"
+  UPL_ENVOY_DIR="$RT/envoy" docker compose -p upl-infra -f "$COMPOSE_FILE" "$@"
+}
+
+cmd_infra() {
+  local action="${1:-}"; shift || true
+  local extra=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --with-keycloak) extra="--profile keycloak" ;;
+    esac
+    shift
+  done
+  mkdir -p "$RT/env" "$RT/log" "$RT/run"
+  case "$action" in
+    up)
+      compose up -d $extra || die "docker compose up упал"
+      local i up
+      for i in db db17 redis; do
+        up=""
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+          [ "$(docker inspect "upl-$i" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && { up=1; break; }
+          sleep 1
+        done
+        [ -n "$up" ] || die "upl-$i не стал healthy"
+      done
+      # Основные БД гарантируем и на существующем volume (initdb — только на пустом).
+      docker exec -i upl-db psql -X -q -U postgres -d postgres -f - < "$SCRIPT_DIR/initdb/db15/01-databases.sql"
+      docker exec -i upl-db17 psql -X -q -U postgres -d postgres -f - < "$SCRIPT_DIR/initdb/db17/01-databases.sql"
+      info "инфраструктура поднята: upl-db(15):5432 upl-db17(17):5433 redis:6379 kafka:9092/9094 rabbitmq:5672 minio:9000 jaeger:16686 envoy:8110"
+      ;;
+    down)
+      compose down || die "docker compose down упал"
+      info "инфраструктура остановлена (volumes сохранены; экземпляры сервисов на хосте не тронуты — останови их: svc down)"
+      ;;
+    status)
+      compose ps
+      ;;
+    *) die "infra: неизвестное действие '$action' (up|down|status)" ;;
+  esac
+}
+
+# ── Команды: svc ─────────────────────────────────────────────────────────────
+
+cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
+  local svc="$1"; shift
+  local task_key="" branch="" sfx="" proc="api"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --task) task_key="$2"; shift 2 ;;
+      --branch) branch="$2"; shift 2 ;;
+      --suffix) sfx="$2"; shift 2 ;;
+      --proc) proc="$2"; shift 2 ;;
+      *) die "svc up: неизвестный флаг $1" ;;
+    esac
+  done
+  command -v go >/dev/null || die "go не найден в PATH (/usr/local/go/bin)"
+  docker ps --format '{{.Names}}' | grep -qx upl-db || die "инфраструктура не поднята: upl-infra.sh infra up"
+
+  local repo src name port dbname env inst_task=0
+  repo="$UPL_HOME/services/$(svc_repo "$svc")" || die "неизвестный сервис $svc"
+  if [ -n "${task_key:-}${sfx:-}" ]; then
+    [ -z "$sfx" ] && sfx="$(task_suffix "$task_key")"
+    [ -n "$sfx" ] || die "svc up: не распознал суффикс задачи"
+    [ -n "$branch" ] || branch="feature/UPL-$sfx"
+    inst_task=1
+  fi
+  if [ "$inst_task" = "1" ]; then
+    name="$svc-$sfx"
+    local base; base="$(svc_port "$svc")"
+    port=$((9000 + base - 8000))
+    local dn; dn="$(svc_dbname "$svc" 2>/dev/null || true)"
+    dbname=""; [ -n "$dn" ] && dbname="${dn}_${sfx}"
+    src="$(worktree_path "$svc" "$sfx")"
+    if [ ! -d "$src" ]; then
+      ( cd "$repo" && git worktree add "$src" "$branch" 2>/dev/null ) \
+        || ( cd "$repo" && git worktree add -b "$branch" "$src" "origin/$branch" 2>/dev/null ) \
+        || die "нет ветки $branch у $(svc_repo "$svc") — создай её или проверь ключ"
+    fi
+    local dbh; dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
+    [ -n "$dbh" ] && ensure_db "$dbh" "$dbname"
+  else
+    name="$svc"
+    port="$(svc_port "$svc")"
+    dbname="$(svc_dbname "$svc")"
+    src="$repo"
+    local cur
+    cur="$(git -C "$src" branch --show-current)"
+    [ "$cur" = "develop" ] || die "основной чекаут $svc на ветке '$cur', а не develop: develop-экземпляр гоняет только develop (задачный код — через svc up --task)"
+  fi
+  # env рендерим до миграций: мигать можно только с проверенным CONFIG_PATH
+  # (environment.md), общий рендер даёт хост/порт/имя БД этого экземпляра.
+  render_env "$svc" "$(envfile "$name")" "$port" "$dbname" "$inst_task"
+  if [ -n "$(svc_dbhost "$svc" 2>/dev/null || true)" ] && [ -d "$src/cmd/migrate" ]; then
+    run_migrate "$src" "$(envfile "$name")" up
+    local want have
+    want="$(max_migration "$src")"; have="$(migrate_applied_version "$(svc_dbhost "$svc")" "$dbname")"
+    [ "$((10#${have:-0}))" -ge "$((10#${want:-0}))" ] || info "предупреждение: schema_migrations=$have, максимум миграций=$want ($dbname)"
+  fi
+  if instance_running "$name"; then
+    info "$name уже запущен (порт $port) — код и конфиг подхватывает супервизор"
+    return 0
+  fi
+  if port_busy "$port"; then
+    die "порт $port занят, экземпляр $name не поднят — освободи порт или останови занявший процесс"
+  fi
+  [ "$svc" = "auth" ] && { [ -e "$src/configs/.env" ] || ln -s "$(envfile "$name")" "$src/configs/.env"; }
+  nohup bash "$SELF" __supervisor "$name" "$src" "$(envfile "$name")" "$proc" >/dev/null 2>&1 &
+  local sup=$!
+  disown "$sup" 2>/dev/null
+  echo "$sup" > "$(pidfile "$name")"
+  if docker ps --format '{{.Names}}' | grep -qx upl-envoy; then
+    envoy_rewrite_backends_live # живые инстансы поменялись — file provider перечитает
+  fi
+  info "$name поднят: порт $port${dbname:+, БД $dbname}, лог $(logfile "$name")"
+}
+
+cmd_svc_down() {
+  local svc="$1"; shift
+  local sfx="" proc="api"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --task) sfx="$(task_suffix "$2")"; shift 2 ;;
+      --proc) proc="$2"; shift 2 ;;
+    esac
+    shift
+  done
+  local name="$svc"; [ -n "$sfx" ] && name="$svc-$sfx"
+  stop_instance "$name"
+  if docker ps --format '{{.Names}}' | grep -qx upl-envoy; then
+    envoy_rewrite_backends_live
+  fi
+  info "$name остановлен"
+}
+
+cmd_svc_status() {
+  local svc line inst pid child port
+  printf '%-24s %-6s %-8s %s\n' "INSTANCE" "PORT" "PID" "STATE"
+  for svc in $KNOWN_SERVICES; do
+    for inst in $(instance_names "$svc"); do
+      local base; base="$(svc_port "$svc")"
+      port="$base"; case "$inst" in "$svc"-*) port=$((9000 + base - 8000));; esac
+      if instance_running "$inst"; then
+        pid="$(cat "$(pidfile "$inst")")"
+        printf '%-24s %-6s %-8s %s\n' "$inst" "$port" "$pid" "запущен"
+      else
+        printf '%-24s %-6s %-8s %s\n' "$inst" "$port" "-" "остановлен"
+      fi
+    done
+  done
+}
+
+cmd_svc_logs() {
+  local svc="$1"; shift; local sfx=""
+  while [ $# -gt 0 ]; do case "$1" in --task) sfx="$(task_suffix "$2")"; shift 2;; esac; shift; done
+  local name="$svc"; [ -n "$sfx" ] && name="$svc-$sfx"
+  tail -n 200 -f "$(logfile "$name")"
+}
+
+cmd_svc_migrate() { # <svc> up|down [--task ...]
+  local svc="$1"; shift
+  local dir="up" sfx=""
+  while [ $# -gt 0 ]; do
+    case "$1" in up|down) dir="$1" ;; --task) sfx="$(task_suffix "$2")"; shift 2 ;; esac
+    shift
+  done
+  local repo name dbname src
+  repo="$UPL_HOME/services/$(svc_repo "$svc")"
+  name="$svc"; [ -n "$sfx" ] && { name="$svc-$sfx"; dbname="$(svc_dbname "$svc")_$sfx"; src="$(worktree_path "$svc" "$sfx")"; } || { dbname="$(svc_dbname "$svc")"; src="$repo"; }
+  [ -n "$(svc_dbhost "$svc" 2>/dev/null || true)" ] || { info "$svc без БД - миграций нет"; return 0; }
+  [ -d "$src/cmd/migrate" ] || { info "$svc: cmd/migrate отсутствует - пропуск"; return 0; }
+  [ -f "$(envfile "$name")" ] || die "нет env экземпляра $name — подними его: svc up $svc"
+  if [ "$dir" = "down" ]; then
+    ( cd "$src" && CONFIG_PATH="$(envfile "$name")" go run ./cmd/migrate -direction down -steps 1 ) || die "откат не прошёл"
+  else
+    run_migrate "$src" "$(envfile "$name")" up
+  fi
+  info "migrate $dir выполнен для $name (БД $dbname)"
+}
+
+# ── Envoy под задачу / приёмка ───────────────────────────────────────────────
+
+envoy_render_for_task() { # <sfx|''> — конфиг из worktree задачи envoy, если есть
+  local sfx="$1" src="$UPL_HOME/services/envoy"
+  [ -n "$sfx" ] && [ -d "$UPL_HOME/services/envoy-UPL-$sfx/config" ] && src="$UPL_HOME/services/envoy-UPL-$sfx"
+  envoy_render_from "$src"
+}
+
+envoy_rewrite_backends_live() { # pairs backend=порт: задача приоритетна, иначе живой develop
+  local svc name port
+  : > "$RT/envoy/.ports"
+  for svc in $KNOWN_SERVICES; do
+    port="$(instance_task_port "$svc")"
+    if [ -n "$port" ]; then
+      printf '%s=%s\n' "$svc" "$port" >> "$RT/envoy/.ports"
+    elif instance_running "$svc"; then
+      printf '%s=%s\n' "$svc" "$(svc_port "$svc")" >> "$RT/envoy/.ports"
+    fi
+  done
+  envoy_backends_python
+}
+
+instance_task_port() { # <svc> → порт живого экземпляра задачи или пусто
+  local name base
+  base="$(svc_port "$1")"
+  for name in $(instance_names "$1"); do
+    case "$name" in
+      "$1"-*) instance_running "$name" && echo $((9000 + base - 8000)) && return ;;
+    esac
+  done
+}
+
+changed_methods_diff() { # <svc> <worktree> → список изменённых методов или пусто
+  local svc="$1" wt="$2" repo="$UPL_HOME/services/$(svc_repo "$svc")"
+  if [ "$svc" = "bff" ]; then
+    local a="$repo/configs/aggregation.yaml" b="$wt/configs/aggregation.yaml"
+    [ -f "$a" ] && [ -f "$b" ] || return 0
+    { diff <(grep -E '^[[:space:]]+(method|path):' "$a") <(grep -E '^[[:space:]]+(method|path):' "$b") \
+      | grep '^>' || true; } | paste -sd' ' - | sed 's/[[:space:]]\+/ /g'
+    return 0
+  fi
+  local a="$repo/api/docs/swagger.json" b="$wt/api/docs/swagger.json"
+  [ -f "$a" ] && [ -f "$b" ] || return 0
+  python3 - "$a" "$b" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1])).get("paths", {})
+b = json.load(open(sys.argv[2])).get("paths", {})
+new = []
+for p, ops in b.items():
+    for m, op in ops.items():
+        if m not in ("get", "post", "put", "patch", "delete"):
+            continue
+        if p not in a or m not in a[p]:
+            new.append(f"{m.upper()} {p}")
+print(" ".join(new))
+PY
+}
+
+cmd_accept() { # <UPL-XXXX>
+  local key="$1"; [ -n "${key:-}" ] || die "accept: укажи ключ задачи"
+  local sfx; sfx="$(task_suffix "$key")"; [ -n "$sfx" ] || die "accept: не распознал суффикс в '$key'"
+  mkdir -p "$RT/env" "$RT/log" "$RT/run"
+  cmd_infra up
+
+  local svc wt affected=""
+  for svc in $KNOWN_SERVICES; do
+    wt="$(worktree_path "$svc" "$sfx")"
+    if [ -d "$wt" ] || instance_running "$svc-$sfx"; then
+      affected="$affected $svc"
+    fi
+  done
+  [ -n "$(echo "$affected" | tr -d ' ')" ] || { info "нет затронутых сервисов задачи $key (нет worktree и экземпляров)"; return 0; }
+
+  for svc in $affected; do
+    cmd_svc_up "$svc" --task "$key"
+  done
+
+  envoy_render_for_task "$sfx"
+  if ! docker ps --format '{{.Names}}' | grep -qx upl-envoy; then
+    compose up -d envoy || die "envoy не поднялся"
+  fi
+  sleep 2 # file provider подхватывает конфиг
+
+  info ""
+  info "Приёмка $key — envoy: http://localhost:8110"
+  for svc in $affected; do
+    local port; port="$(instance_task_port "$svc")"
+    [ -n "$port" ] || port="$(svc_port "$svc")"
+    local methods; methods="$(changed_methods_diff "$svc" "$(worktree_path "$svc" "$sfx")")"
+    info "• $svc: http://localhost:$port/swagger/index.html${methods:+ — изменённые: $methods}"
+  done
+}
+
+# ── task close ───────────────────────────────────────────────────────────────
+
+cmd_task_close() { # <UPL-XXXX>
+  local key="$1"; [ -n "${key:-}" ] || die "task close: укажи ключ задачи"
+  local sfx; sfx="$(task_suffix "$key")"; [ -n "$sfx" ] || die "task close: не распознал суффикс в '$key'"
+
+  local svc wt repo dbname dbh
+  for svc in $KNOWN_SERVICES; do
+    wt="$(worktree_path "$svc" "$sfx")"
+    repo="$UPL_HOME/services/$(svc_repo "$svc")"
+    [ -d "$wt" ] || [ -e "$(pidfile "$svc-$sfx")" ] || continue
+    dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
+    dbname="$(svc_dbname "$svc")_$sfx"
+
+    # 1. Миграции задачи — на основную БД сервиса.
+    if [ -n "$dbh" ] && [ -d "$wt/cmd/migrate" ]; then
+      local want have
+      want="$(max_migration "$wt")"
+      have="$(migrate_applied_version "$dbh" "$(svc_dbname "$svc")")"
+      if [ -n "$want" ] && [ "$((10#${want:-0}))" -gt "$((10#${have:-0}))" ]; then
+        local mainenv="$(envfile "$svc")"
+        [ -f "$mainenv" ] || { render_env "$svc" "$mainenv" "$(svc_port "$svc")" "$(svc_dbname "$svc")" 0; }
+        run_migrate "$wt" "$mainenv" up
+        info "$svc: миграции до $want применены на основную БД $(svc_dbname "$svc")"
+      else
+        info "$svc: новых миграций для основной БД нет (БД=$have, задача=$want)"
+      fi
+    fi
+
+    # 2. Останов экземпляра задачи.
+    stop_instance "$svc-$sfx" 2>/dev/null
+
+    # 3. БД задачи.
+    [ -n "$dbh" ] && { drop_db "$dbh" "$dbname" && info "$svc: БД $dbname удалена"; }
+
+    # 4. Worktree и ветка.
+    if [ -d "$wt" ]; then
+      if git -C "$repo" worktree remove "$wt" 2>/dev/null; then
+        info "$svc: worktree $(basename "$wt") снят"
+      elif git -C "$repo" worktree remove --force "$wt" 2>/dev/null; then
+        info "$svc: worktree $(basename "$wt") снят (--force: были незакоммиченные файлы)"
+      else
+        info "$svc: worktree $(basename "$wt") НЕ снят — сними вручную (git worktree remove --force)"
+      fi
+    fi
+    local branch="feature/UPL-$sfx"
+    if git -C "$repo" rev-parse --verify -q "refs/heads/$branch" >/dev/null; then
+      if git -C "$repo" branch -d "$branch" 2>/dev/null; then
+        info "$svc: ветка $branch удалена (слита)"
+      else
+        info "$svc: ветка $branch ОСТАВЛЕНА — не слита в develop; удали вручную после MR"
+      fi
+    fi
+  done
+
+  envoy_render_for_task ""
+  docker ps --format '{{.Names}}' | grep -qx upl-envoy && sleep 2
+  info "задача $key закрыта"
+}
+
+# ── seed / doctor ────────────────────────────────────────────────────────────
+
+cmd_seed() {
+  local svc="${1:-catalog}"
+  case "$svc" in
+    catalog)
+      local sql="$UPL_HOME/services/catalog-db-smoke.sql"
+      [ -f "$sql" ] || die "$sql не найден"
+      docker exec -i upl-db17 psql -X -q -1 -v ON_ERROR_STOP=1 -v smoke_count=5 -U postgres -d catalog -f - < "$sql" \
+        || die "засев catalog не прошёл"
+      info "catalog засеян smoke-данными (db17)"
+      ;;
+    *) die "seed: поддержан только catalog" ;;
+  esac
+}
+
+cmd_doctor() {
+  local ok=1 msg
+  command -v docker >/dev/null && command -v go >/dev/null || { info "нет docker или go в PATH"; ok=0; }
+  [ -d "$UPL_HOME/services" ] || { info "$UPL_HOME/services не найден (задай UPL_HOME)"; ok=0; }
+  local p who
+  for p in 5432 5433 6379 9092 9094 5672 15672 9000 9001 16686 4317 8110; do
+    if port_busy "$p"; then
+      who="$(lsof -nP -iTCP:"$p" -sTCP:LISTEN | awk 'NR==2{print $1"("$2")"}')"
+      msg="$msg порт $p занят ($who);"
+    fi
+  done
+  [ -n "$msg" ] && { info "конфликты портов:$msg"; ok=0; }
+  [ "$ok" = "1" ] && info "doctor: всё чисто" || info "doctor: есть замечания"
+}
+
+# ── Диспетчер ────────────────────────────────────────────────────────────────
+
+case "${1:-}" in
+  infra) shift; cmd_infra "$@" ;;
+  svc)
+    shift
+    action="${1:-}"; shift || true
+    case "$action" in
+      up|down|logs|migrate)
+        s="${1:-}"; shift || true
+        case "$action" in
+          up) cmd_svc_up "$s" "$@" ;;
+          down) cmd_svc_down "$s" "$@" ;;
+          logs) cmd_svc_logs "$s" "$@" ;;
+          migrate) cmd_svc_migrate "$s" "$@" ;;
+        esac ;;
+      status) cmd_svc_status ;;
+      *) die "svc: неизвестное действие '$action'" ;;
+    esac ;;
+  seed) shift; cmd_seed "$@" ;;
+  accept) shift; cmd_accept "$@" ;;
+  task)
+    shift
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      close) cmd_task_close "$@" ;;
+      *) die "task: неизвестное действие '$sub'" ;;
+    esac ;;
+  doctor) cmd_doctor ;;
+  __supervisor) shift; cmd_supervisor "$@" ;;
+  ""|-h|--help|help)
+    awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0" ;;
+  *) die "неизвестная команда '$1' (см. $0 без аргументов)" ;;
+esac

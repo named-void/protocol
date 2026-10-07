@@ -1,0 +1,161 @@
+# Единый локальный инфраструктурный стенд UPL.
+#
+# Один постоянно поднятый compose-блок со всей инфраструктурой (БД, redis,
+# kafka, rabbitmq, minio, jaeger, envoy) — всё, кроме самих разрабатываемых
+# сервисов: сервисы запускаются на хосте скриптом upl-infra.sh и получают
+# отсюда общие инстансы инфраструктуры.
+#
+# Постоянные БД сервисов живут здесь без суффикса: отсутствие суффикса
+# подразумевает develop. БД задачи (суффикс ключа UPL) создаёт и удаляет
+# upl-infra.sh на этих же инстансах postgres.
+#
+# Запуск: upl-infra.sh infra up (экспортирует UPL_ENVOY_DIR и рендерит
+# конфиг envoy из services/envoy). Вручную:
+#   UPL_ENVOY_DIR=~/_dev/git/obs/upl/.infra/envoy docker compose -p upl-infra -f compose.yaml up -d
+
+name: upl-infra
+
+services:
+  # postgres 15: auth, user, ord
+  db:
+    image: postgres:15
+    container_name: upl-db
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./initdb/db15:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # postgres 17: catalog, report, tracking
+  db17:
+    image: postgres:17-alpine
+    container_name: upl-db17
+    ports:
+      - "5433:5432"
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - db17-data:/var/lib/postgresql/data
+      - ./initdb/db17:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: upl-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # Один брокер на все сервисы: PLAINTEXT для контейнеров, EXTERNAL (:9094)
+  # для сервисов на хосте — .env сервисов используют localhost:9094.
+  kafka:
+    image: bitnamilegacy/kafka:3.9.0-debian-12-r9
+    container_name: upl-kafka
+    ports:
+      - "9092:9092"
+      - "9094:9094"
+    environment:
+      KAFKA_CFG_NODE_ID: "0"
+      KAFKA_CFG_PROCESS_ROLES: controller,broker
+      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@kafka:9093
+      KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093,EXTERNAL://:9094
+      KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,EXTERNAL://localhost:9094
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_CFG_NUM_PARTITIONS: "3"
+    volumes:
+      - kafka-data:/bitnami/kafka
+
+  rabbitmq:
+    image: rabbitmq:4.2.5-management
+    container_name: upl-rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: upl-minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: upl-jaeger
+    ports:
+      - "16686:16686"
+      - "4317:4317"
+      - "4318:4318"
+
+  # Локальный Keycloak для сценариев WebSSO/Keycloak у auth-service.
+  # По умолчанию выключен: infra up --with-keycloak.
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: upl-keycloak
+    profiles: [keycloak]
+    command: start-dev
+    ports:
+      - "8180:8080"
+
+  # Разовая генерация сертификатов в общий volume до старта envoy.
+  envoy-certgen:
+    image: envoyproxy/gateway:v1.8.2
+    container_name: upl-envoy-certgen
+    command: ["certgen", "--local", "--config-home", "/workspace/.eg"]
+    volumes:
+      - ${UPL_ENVOY_DIR:?set UPL_ENVOY_DIR}:/workspace
+
+  envoy:
+    image: envoyproxy/gateway:v1.8.2
+    container_name: upl-envoy
+    depends_on:
+      envoy-certgen:
+        condition: service_completed_successfully
+    ports:
+      - "8110:8110"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["server", "--config-path", "/workspace/standalone.yaml"]
+    volumes:
+      - ${UPL_ENVOY_DIR:?set UPL_ENVOY_DIR}:/workspace
+    restart: unless-stopped
+
+volumes:
+  db-data:
+  db17-data:
+  redis-data:
+  kafka-data:
+  rabbitmq-data:
+  minio-data:

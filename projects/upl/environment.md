@@ -12,29 +12,43 @@
 - Проверки на Develop выполняй через версионированные сценарии `test-dev-rights`; read-only остаётся режимом по умолчанию для неописанных запросов,
   а POST/PUT/PATCH/DELETE разрешены только в сценарии с минимальным изменением, уникальным fixture или восстановлением и обязательным cleanup.
 
-## Локальный сквозной прогон через gateway
+## Локальная инфраструктура и сквозной прогон через gateway
 
-- `final-checks.sh` репозиторий проверяет изолированно и envoy-роутинг не видит: методы bff и новые маршруты проверяй сквозным прогоном против `http://localhost:8110` до постановки MR.
-  Primary при недостижимости bff принимает запрос сам и молча игнорирует не свои параметры - каждый новый фильтр bff проверяй отдельным запросом через gateway.
-- Envoy поднимай в Docker из копии каталога `services/envoy` вне worktree.
-  В копии `config/backends.yaml` эндпоинты `ip: 127.0.0.1` заменяй на `fqdn: {hostname: host.docker.internal, port: <порт>}`: поле `ip` в envoy-gateway v1.8.2 валидируется как строгий IP и имени хоста не принимает.
-  В копии `standalone.yaml` пропиши пути ресурса `/workspace/config` и `configHome`/`dataHome: /workspace/.eg`. Затем:
-  ```bash
-  docker run --rm -v <копия>:/workspace -w /workspace envoyproxy/gateway:v1.8.2 certgen --local --config-home /workspace/.eg
-  docker run -d --name envoy-gateway -p 8110:8110 -v <копия>:/workspace -w /workspace \
-    --add-host=host.docker.internal:host-gateway envoyproxy/gateway:v1.8.2 \
-    server --config-path /workspace/standalone.yaml
-  ```
-  Правки `config/` копии file provider подхватывает без рестарта.
-- Сервисы поднимай на хосте из копий `.env` вне worktree: auth `8100`, user `8101`, catalog `8102`, bff `8113` - `CONFIG_PATH=<копия> go run ./cmd/api`.
-  БД auth, user и catalog - общий контейнер `db` user-стека. `cmd/api/debug.go` auth требует `configs/.env`: положи рядом симлинк на внешнюю копию (путь gitignored).
-- В копии auth обязательны непустой `AUTH_SIGNING_KEY` и `DEV_LOGIN_ENABLED=true`: пустой ключ даёт dev login без секрета HS256, и `/auth/validate` отвечает 401 с ошибкой подписи.
-- Миграции накатывай по разделу "Интеграционные тесты"; данные каталога для фильтров засевай `services/catalog-db-smoke.sql` одной транзакцией:
-  `docker exec -i db psql -X -q -1 -v ON_ERROR_STOP=1 -v smoke_count=5 -U postgres -d catalog -f - < catalog-db-smoke.sql`.
-- Локальную сессию получай `POST /auth/dev/login` с телом `{"role": "<код роли>"}` - локально роль в запросе передаётся, в отличие от develop.
-  Роль бери с реальным доступом к проверяемому методу: у `reg` нет `publishers-slim`, у `super_admin` почти всё; доступы смотри в `role_permission` БД auth.
-- Роуты сверяй с `services/envoy/config/routes.yaml`: у HTTPRoute `bff` query-матчер видит только первое значение ключа, регэкспы требуют полного совпадения значения.
-  Задача с bff-блоком в `aggregation.yaml` обязана включать правило envoy (см. профиль upl-services) - отсутствие правила ловит только этот прогон.
+- Инфраструктура - один постоянный compose-блок `upl-infra` (`projects/upl/infra/compose.yaml`):
+  postgres 15 (`upl-db`, host 5432: auth, user, ord), postgres 17 (`upl-db17`, host 5433: catalog, report, tracking),
+  redis 6379, kafka 9092/9094, rabbitmq 5672, minio 9000, jaeger 16686, envoy 8110.
+  Подъём: `upl-infra.sh infra up` (скрипт рядом с профилем, `projects/upl/infra/`).
+- Экземпляры сервисов поднимает `upl-infra.sh svc up <svc>` на хосте из основного чекаута:
+  auth 8100, user 8101, catalog 8102, report 8103, tracking 8108, ord 8666, bff 8113.
+  Develop-экземпляр требует, чтобы чекаут сервиса стоял на `develop`; код задачного сервиса гоняется
+  только как экземпляр задачи: `svc up <svc> --task UPL-XXXX`
+  (worktree `services/<repo>-UPL-<N>`, ветка `feature/UPL-XXXX`, порт 9000+(порт-8000), БД `<db>_<N>`).
+- Супервизор экземпляра перезапускает процесс при изменении исходников; логи в `~/_dev/git/obs/upl/.infra/log/`,
+  статусы - `svc status`; конфиг экземпляра рендерится в `.infra/env/<имя>.env` из `configs/.env.example`.
+- Основная БД каждого сервиса без суффикса = develop и живёт в общем блоке.
+  Задача с миграциями при `task close UPL-XXXX` применяет их на основную БД своего сервиса,
+  затем снимает свои экземпляры, БД `<db>_<N>`, worktree и ветку (слитую).
+- Финальный шаг приёмки до `task close` - `upl-infra.sh accept UPL-XXXX`: поднимает envoy с конфигом
+  из worktree `envoy-UPL-XXXX` (если есть) и экземпляры всех затронутых задачей сервисов,
+  печатает ссылки на swagger-UI изменённых методов.
+  Список изменённых методов берётся из diff `api/docs/swagger.json` обоих деревьев, для bff - из diff `aggregation.yaml`;
+  нет исходника списка - печатается только ссылка на swagger-UI сервиса.
+- Данные каталога для фильтров засевай `services/catalog-db-smoke.sql`: `upl-infra.sh seed catalog`.
+- Envoy: file provider рендер-копии в `.infra/envoy/` подхватывает без рестарта; `svc up/down` сами
+  переписывают `backends.yaml` на порты живых экземпляров (экземпляр задачи приоритетнее develop).
+- Локальную сессию получай `POST /auth/dev/login` с телом `{"role": "<код роли>"}` - локально роль
+  в запросе передаётся, в отличие от develop.
+  Роль бери с реальным доступом к проверяемому методу: у `reg` почти нет доступов, у `super_admin` почти всё;
+  доступы смотри в `role_permission` БД auth (`upl-db`).
+- Сквозной прогон против envoy: методы bff и новые маршруты проверяй через `http://localhost:8110`
+  до постановки MR; primary при недостижимости bff принимает запрос сам и молча игнорирует не свои параметры -
+  каждый новый фильтр bff проверяй отдельным запросом через gateway.
+- Роуты сверяй с `services/envoy/config/routes.yaml`: у HTTPRoute `bff` query-матчер видит только первое
+  значение ключа, регэкспы требуют полного совпадения значения.
+  Задача с bff-блоком в `aggregation.yaml` обязана включать правило envoy (см. профиль upl-services) -
+  отсутствие правила ловит только этот прогон.
+- `final-checks.sh` для проверки миграций берёт контейнер из `DB_CONTAINER`,
+  иначе находит `upl-db`/`upl-db17` общего блока сам.
 
 ## Dev-авторизация для `test-dev-rights`
 
@@ -60,8 +74,12 @@
 - Конфиг читается из файла `CONFIG_PATH` с приоритетом над переменными окружения: для прогона против другой БД правь временную копию `.env`, переопределение `DB_NAME` через env не сработает. Копия обязана оканчиваться на `.env` — парсер выбирается по расширению, файл без него роняет загрузку конфига. Изолированную БД удаляй `DROP DATABASE ... WITH (FORCE)`.
 - Конфигурация идёт по стандартному сценарию cleanenv: обязательность — тег `env-required`, значение по умолчанию — тег `env-default` (применяется только к отсутствующей переменной). Deployment-шаблон не определяет переменную пустой строкой: compose-маппинг переменной с дефолтом задаётся как `${VAR:-default}`, argocd-шаблон проставляет значение или не создаёт ключ. Пустая подстановка отсутствующей переменной — дефект шаблона: чинят шаблон, а не код.
 - Dev-цель отката миграций обязана передавать `-steps 1`: при `steps == 0` откатываются все миграции, а dev-БД общая. Цель без флага и расходящийся с кодом текст справки пришли из шаблона — в сервисах их не правь.
-- Имя compose-проекта у всех сервисов upl одинаковое — `compose` (выводится из каталога `deployments/compose`), а `container_name` и порты в `docker-compose.yml` захардкожены (`db`, `redis`, 5432, 6379). Поэтому `make dev-up` из одного сервиса пересоздаёт контейнер `db` чужого стека под своим именем. Свой стек поднимай изолированно: `docker compose -p <KEY> -f deployments/compose/docker-compose.yml -f <override с container_name и ports: !override> --env-file <копия .env> up -d db redis`, а в копии `.env` разведи `DB_PORT`, `REDIS_PORT` и `HTTP_PORT` (5432 и 6379 обычно заняты стеком auth-service, 5433 — catalog-service). Копию `.env` держи вне worktree: скрипт приёмки коммитит всё содержимое рабочего дерева. Уборку своего стека (`docker compose -p <KEY> down`) предлагай человеку.
-- `make dev-up` собирает образ `migrate` из приватного registry и падает на `403 Forbidden`: для локального прогона поднимай только `db redis`, а миграции катай `CONFIG_PATH=<копия .env> go run ./cmd/migrate -direction up`.
+- Имя compose-проекта у всех сервисов upl одинаковое - `compose` (выводится из каталога `deployments/compose`),
+  а `container_name` и порты в `docker-compose.yml` захардкожены (`db`, `redis`, 5432, 6379).
+  Поэтому `make dev-up` из одного сервиса пересоздаёт контейнер `db` чужого стека под своим именем.
+  Россыпь отдельных compose-стеков сервисов и `make dev-up` не используй:
+  инфраструктуру поднимает общий блок `upl-infra.sh infra up`
+  (см. «Локальная инфраструктура и сквозной прогон через gateway»), экземпляры сервисов - `upl-infra.sh svc up`.
 
 ## Интеграционные тесты
 

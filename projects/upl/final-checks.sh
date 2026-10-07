@@ -221,6 +221,9 @@ load_env_files() {
 # из каталога сервиса. Без такой проверки общий кандидат `db` подхватывает
 # контейнер чужого стенда, и временная БД проверки миграций создаётся в нём
 # (SB-118): в docker ps станции обычно висит `db` соседнего сервиса.
+# Общий инфраструктурный блок UPL (upl-db/upl-db17, проект upl-infra) — общий
+# по построению для всех сервисов, проверка принадлежности сервиса к нему
+# не применяется.
 container_belongs_to_service() {
   local work_dir
   work_dir="$(docker inspect "$1" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null)"
@@ -241,6 +244,14 @@ detect_db_container() {
 
   for candidate in "${SERVICE_NAME}-db" db; do
     if grep -qx "$candidate" "$LOG_DIR/docker-ps.log" && container_belongs_to_service "$candidate"; then
+      printf '%s' "$candidate"
+      return
+    fi
+  done
+
+  # Общий инфраструктурный блок: любой из его postgres годен для disposable БД.
+  for candidate in upl-db upl-db17; do
+    if grep -qx "$candidate" "$LOG_DIR/docker-ps.log"; then
       printf '%s' "$candidate"
       return
     fi
@@ -278,7 +289,7 @@ run_migration_check() {
   db_container="$(detect_db_container)"
   if [[ -z "$db_container" ]]; then
     failed=1
-    status "migration up/down" "блокер: контейнер БД стенда ${SERVICE_NAME} не найден (кандидаты: \${DB_CONTAINER}, ${SERVICE_NAME}-db, db; контейнер чужого стенда отвергнут — подними стенд сервиса или задай DB_CONTAINER)"
+    status "migration up/down" "блокер: контейнер БД стенда ${SERVICE_NAME} не найден (кандидаты: \${DB_CONTAINER}, ${SERVICE_NAME}-db, db, upl-db, upl-db17; контейнер чужого стенда отвергнут — подними стенд сервиса или задай DB_CONTAINER)"
     return
   fi
 
