@@ -51,9 +51,11 @@
 - `final-checks.sh` для проверки миграций берёт контейнер из `DB_CONTAINER`,
   иначе находит общий postgres `db` стенда сам.
 - Креды и туннель develop-postgres: `projects/upl/.data/config.toml`, секция `[develop_db]`
-  (рыба и рецепт дампа/заливки - соседний `develop-db.env.example`; .data gitignored).
-  Строка подключения к develop postgres собирается только в read-only:
-  `PGOPTIONS='-c default_transaction_read_only=on'` перед psql/pg_dump; запись на develop из этих сессий запрещена.
+  (рыба и объяснение схемы - соседний `develop-db.env.example`; .data gitignored).
+  Канонический интерфейс - `upl-infra.sh dev check|dump|fill`: read-only зашит в conninfo
+  (переменную PGOPTIONS host-psql shim не пробрасывает), креды из config.toml в сессию не выводятся.
+  Запись на develop запрещена; заливка данных - только в локальный `db` после
+  `dev check` (схемы и число строк обязаны совпасть).
 
 ## Dev-авторизация для `test-dev-rights`
 

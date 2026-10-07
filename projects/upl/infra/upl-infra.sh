@@ -669,6 +669,111 @@ cmd_task_close() { # <UPL-XXXX>
   info "задача $key закрыта"
 }
 
+# ── develop postgres (read-only) ─────────────────────────────────────────────
+# Зафиксированная схема (2026-10-07, сессия консолидации стенда):
+#   - креды: projects/upl/.data/config.toml, секция [develop_db]; в сессию,
+#     логи и args процессов не выводятся (ни пользователь, ни пароль).
+#   - host psql - это shim (~/.local/bin/psql, docker exec db psql): переменную
+#     PGOPTIONS он не пробрасывает, поэтому read-only включается только
+#     options-параметром в conninfo.
+#   - pg_dump на хосте нет - клиент берётся из контейнера db (pg 17 = версии
+#     сервера), PGPASSWORD передаётся через docker exec -e (как в shim).
+#   - база postgres в pg_hba develop запрещена - подключаться к целевой БД.
+#   - порядок заливки: TRUNCATE всех таблиц кроме schema_migrations,
+#     затем restore -1 с session_replication_role=replica (FK отложены).
+
+DEV_CONF="$(cd "$SCRIPT_DIR/.." && pwd)/.data/config.toml"
+DEV_DBS="auth user catalog ord report tracking"
+
+dev_env() { # → DEV_HOST/DEV_PORT/DEV_USER/DEV_PASSWORD (eval; без вывода значений)
+  [ -f "$DEV_CONF" ] || die "нет $DEV_CONF - заполни [develop_db] по рыбе develop-db.env.example"
+  python3 - "$DEV_CONF" <<'PY'
+import re, sys
+t = open(sys.argv[1]).read()
+m = re.search(r'\[develop_db\]([^\[]*)', t)
+d = dict(re.findall(r'(\w+)\s*=\s*"?([^"\n]+)"?', m.group(1))) if m else {}
+for k in ('host', 'port', 'user', 'password'):
+    v = d.get(k, '').strip()
+    if v:
+        print('DEV_%s="%s"' % (k.upper(), v))
+    elif k != 'port':
+        print("die 'в [develop_db] не заполнено: %s'" % k)
+PY
+}
+
+dev_ci() { # <db> → conninfo read-only (пароль ходит через PGPASSWORD)
+  printf 'host=%s port=%s user=%s dbname=%s options=%s' \
+    "$DEV_HOST" "${DEV_PORT:-5432}" "$DEV_USER" "$1" "'-c default_transaction_read_only=on'"
+}
+
+# Суммарное число строк по всем таблицам public (develop или локально).
+dev_rows() { # <db> dev|local → число
+  local q
+  if [ "$2" = "dev" ]; then
+    export PGHOST="$DEV_HOST" PGPORT="${DEV_PORT:-5432}" PGUSER="$DEV_USER" PGPASSWORD="$DEV_PASSWORD" PGDATABASE=postgres
+    q="$(psql "$(dev_ci "$1")" -tAc "SELECT coalesce(string_agg(format('SELECT %L AS t, count(*) AS n FROM %I.%I', tablename, schemaname, tablename), ' UNION ALL '),'SELECT 0 AS t, 0 AS n') FROM pg_tables WHERE schemaname='public'")"
+    psql "$(dev_ci "$1")" -tAc "$q" | awk -F'|' '{s+=$2} END{print s+0}'
+  else
+    q="$(docker exec db psql -X -tA -U postgres -d "$1" -c "SELECT coalesce(string_agg(format('SELECT %L AS t, count(*) AS n FROM %I.%I', tablename, schemaname, tablename), ' UNION ALL '),'SELECT 0 AS t, 0 AS n') FROM pg_tables WHERE schemaname='public'")"
+    docker exec db psql -X -tA -U postgres -d "$1" -c "$q" | awk -F'|' '{s+=$2} END{print s+0}'
+  fi
+}
+
+cmd_dev_check() {
+  eval "$(dev_env)"
+  export PGPASSWORD="$DEV_PASSWORD" PGHOST="$DEV_HOST" PGPORT="${DEV_PORT:-5432}" PGUSER="$DEV_USER" PGDATABASE=postgres
+  local d r l rd rl
+  printf '%-10s %-13s %-13s %-8s %-8s %s\n' "DB" "SCHEMA(dev)" "SCHEMA(local)" "ROWS(dev)" "ROWS(local)" "ИТОГ"
+  for d in $DEV_DBS; do
+    r="$(psql "$(dev_ci "$d")" -tAc "select version from schema_migrations" 2>/dev/null | tr -d '[:space:]')"
+    l="$(docker exec db psql -X -tA -U postgres -d "$d" -c "select version from schema_migrations" 2>/dev/null | tr -d '[:space:]')"
+    rd="$(dev_rows "$d" dev)"; rl="$(dev_rows "$d" local)"
+    local ok=OK
+    [ "$((10#${r:-0}))" = "$((10#${l:-0}))" ] && [ "$rd" = "$rl" ] || ok=РАСХОЖДЕНИЕ
+    printf '%-10s %-13s %-13s %-8s %-8s %s\n' "$d" "${r:-?}" "${l:-?}" "$rd" "$rl" "$ok"
+  done
+}
+
+cmd_dev_dump() { # [db...] → $RT/devdump/<db>.sql (600)
+  eval "$(dev_env)"
+  export PGPASSWORD="$DEV_PASSWORD"
+  mkdir -p "$RT/devdump" && chmod 700 "$RT/devdump"
+  local d dbs
+  if [ $# -gt 0 ]; then dbs="$*"; else dbs=$DEV_DBS; fi
+  for d in $dbs; do
+    docker exec -e PGPASSWORD="$DEV_PASSWORD" \
+      -e PGOPTIONS='-c default_transaction_read_only=on' \
+      db pg_dump --host "$DEV_HOST" --port "${DEV_PORT:-5432}" --username "$DEV_USER" \
+      --dbname "$d" --data-only --exclude-table=schema_migrations \
+      --no-owner --no-privileges -f /tmp/devdump-$d.sql \
+      || { docker exec db rm -f /tmp/devdump-$d.sql; die "дамп $d не прошёл"; }
+    docker cp db:/tmp/devdump-$d.sql "$RT/devdump/$d.sql" >/dev/null
+    docker exec db rm -f /tmp/devdump-$d.sql
+    chmod 600 "$RT/devdump/$d.sql"
+    info "$d: дамп $(du -h "$RT/devdump/$d.sql" | cut -f1)"
+  done
+}
+
+cmd_dev_fill() { # [db...] - предочистка + restore + сверка; дампы снимаются
+  eval "$(dev_env)"
+  export PGPASSWORD="$DEV_PASSWORD"
+  local d list rd rl dbs
+  if [ $# -gt 0 ]; then dbs="$*"; else dbs=$DEV_DBS; fi
+  for d in $dbs; do
+    [ -f "$RT/devdump/$d.sql" ] || cmd_dev_dump "$d"
+    list="$(docker exec db psql -X -tA -U postgres -d "$d" -c "SELECT string_agg(format('%I.%I', schemaname, tablename), ', ') FROM pg_tables WHERE schemaname='public' AND tablename <> 'schema_migrations'")"
+    [ -n "$list" ] && docker exec db psql -X -q -U postgres -d "$d" -c "TRUNCATE $list CASCADE" || die "предочистка $d не прошла"
+    docker cp "$RT/devdump/$d.sql" db:/tmp/devdump-$d.sql >/dev/null
+    docker exec -e PGPASSWORD="$DEV_PASSWORD" -e PGOPTIONS='-c session_replication_role=replica' \
+      db psql -X -q -1 -v ON_ERROR_STOP=1 -U postgres -d "$d" -f /tmp/devdump-$d.sql \
+      || { docker exec db rm -f /tmp/devdump-$d.sql; die "restore $d не прошёл"; }
+    docker exec db rm -f /tmp/devdump-$d.sql
+    rm -f "$RT/devdump/$d.sql"
+    rd="$(dev_rows "$d" dev)"; rl="$(dev_rows "$d" local)"
+    info "$d: строки develop=$rd local=$rl $([ "$rd" = "$rl" ] && echo OK || echo РАСХОЖДЕНИЕ); дамп удалён"
+  done
+}
+
 # ── seed / doctor ────────────────────────────────────────────────────────────
 
 cmd_seed() {
@@ -729,6 +834,15 @@ case "${1:-}" in
       *) die "task: неизвестное действие '$sub'" ;;
     esac ;;
   doctor) cmd_doctor ;;
+  dev)
+    shift
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      check) cmd_dev_check ;;
+      dump) cmd_dev_dump "$@" ;;
+      fill) cmd_dev_fill "$@" ;;
+      *) die "dev: неизвестное действие '$sub' (check|dump|fill)" ;;
+    esac ;;
   __supervisor) shift; cmd_supervisor "$@" ;;
   ""|-h|--help|help)
     awk 'NR>1 && /^#/{sub(/^# ?/,""); print; next} NR>1{exit}' "$0" ;;
