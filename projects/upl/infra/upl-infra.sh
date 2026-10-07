@@ -349,6 +349,10 @@ cmd_infra() {
       done
       # Основные БД гарантируем и на существующем volume (initdb — только на пустом).
       docker exec -i db psql -X -q -U postgres -d postgres -f - < "$SCRIPT_DIR/initdb/01-databases.sql"
+      # Расширение как на develop (без preload статистика не пишется, но схема совпадает).
+      for i in $DEV_DBS; do
+        docker exec db psql -X -q -U postgres -d "$i" -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA public' >/dev/null 2>&1
+      done
       info "инфраструктура поднята: db(17):5432 redis:6379 kafka:9092/9094 rabbitmq:5672 minio:9000 jaeger:16686 envoy:8110"
       ;;
     down)
@@ -669,21 +673,29 @@ cmd_task_close() { # <UPL-XXXX>
   info "задача $key закрыта"
 }
 
-# ── develop postgres (read-only) ─────────────────────────────────────────────
+# ── develop postgres (read-only; sync) ───────────────────────────────────────
 # Зафиксированная схема (2026-10-07, сессия консолидации стенда):
 #   - креды: projects/upl/.data/config.toml, секция [develop_db]; в сессию,
 #     логи и args процессов не выводятся (ни пользователь, ни пароль).
-#   - host psql - это shim (~/.local/bin/psql, docker exec db psql): переменную
-#     PGOPTIONS он не пробрасывает, поэтому read-only включается только
-#     options-параметром в conninfo.
-#   - pg_dump на хосте нет - клиент берётся из контейнера db (pg 17 = версии
-#     сервера), PGPASSWORD передаётся через docker exec -e (как в shim).
-#   - база postgres в pg_hba develop запрещена - подключаться к целевой БД.
-#   - порядок заливки: TRUNCATE всех таблиц кроме schema_migrations,
-#     затем restore -1 с session_replication_role=replica (FK отложены).
+#   - host psql - это shim (~/.local/bin/psql, docker exec db psql): он
+#     пробрасывает только PGHOST/PGDATABASE/PGPORT/PGUSER/PGPASSWORD/PGSSL*,
+#     PGOPTIONS не долетает - read-only включается options-параметром conninfo;
+#     guard шима требует PGHOST и PGDATABASE - экспортировать перед вызовом,
+#     PGDATABASE = целевая БД (postgres на develop запрещён pg_hba).
+#   - pg_dump на хосте нет - клиент из контейнера db (pg 17 = серверу), явные
+#     флаги --host/--port/--username/--dbname (conninfo в argv разваливается),
+#     PGPASSWORD/PGOPTIONS - через docker exec -e.
+#     В pg_dump read-only включается -e PGOPTIONS (контейнеру шим не мешает).
+#   - миграции всегда из origin/develop (detached worktree во временном
+#     каталоге), не из чекаутов: их ветки бывают задачными.
+#   - dev sync: (1) БД + проверка подключения read-only; (2) миграции из
+#     origin/develop; (3) структурная сверка схем; (4) схема разошлась -
+#     human-gate (клонировать полным дампом / пропустить); строки разошлись
+#     хотя бы в одной таблице - перелив данных всей БД; иначе БД не трогается.
 
 DEV_CONF="$(cd "$SCRIPT_DIR/.." && pwd)/.data/config.toml"
 DEV_DBS="auth user catalog ord report tracking"
+DEV_MIGRATE_DIR="$RT/develop-migrate"
 
 dev_env() { # → DEV_HOST/DEV_PORT/DEV_USER/DEV_PASSWORD (eval; без вывода значений)
   [ -f "$DEV_CONF" ] || die "нет $DEV_CONF - заполни [develop_db] по рыбе develop-db.env.example"
@@ -701,76 +713,217 @@ for k in ('host', 'port', 'user', 'password'):
 PY
 }
 
-dev_ci() { # <db> → conninfo read-only (пароль ходит через PGPASSWORD)
-  printf 'host=%s port=%s user=%s dbname=%s options=%s' \
-    "$DEV_HOST" "${DEV_PORT:-5432}" "$DEV_USER" "$1" "'-c default_transaction_read_only=on'"
+dev_psql() { # <db> <sql> → результат; read-only через conninfo, PGDATABASE = <db>
+  [ -n "${DEV_HOST:-}" ] || die "dev_psql: креды не загружены"
+  [ -n "${1:-}" ] || die "dev_psql: не указана БД"
+  PGHOST="$DEV_HOST" PGPORT="${DEV_PORT:-5432}" PGUSER="$DEV_USER" PGPASSWORD="$DEV_PASSWORD" \
+  PGDATABASE="$1" psql "host=$DEV_HOST port=${DEV_PORT:-5432} user=$DEV_USER dbname=$1 options='-c default_transaction_read_only=on'" -tAc "$2"
 }
 
-# Суммарное число строк по всем таблицам public (develop или локально).
-dev_rows() { # <db> dev|local → число
+dev_pg_dump() { # <db> <флаги pg_dump...> - клиент из контейнера db; дамп в stdout хоста
+  local db="$1"; shift
+  [ -n "$db" ] || die "dev_pg_dump: не указана БД"
+  docker exec -e PGPASSWORD="$DEV_PASSWORD" \
+    -e PGOPTIONS='-c default_transaction_read_only=on' \
+    db pg_dump --host "$DEV_HOST" --port "${DEV_PORT:-5432}" --username "$DEV_USER" \
+    --dbname "$db" --no-owner --no-privileges "$@"
+}
+
+dev_schema_dump() { # <db> dev|local → stdout; CHECK-строки нормализованы
+  # Нормализация CHECK: deparse legacy-деревьев на develop отличается от
+  # канонического pg17 (группировка ARRAY/касты) - сравниваем значения и
+  # колонки, скобки/касты/скобки-массивы стираем только в этих строках.
+  # sed BSD не понимает класс [][()] - поэтому отдельные подстановки.
+  if [ "$2" = "dev" ]; then
+    dev_pg_dump "$1" --schema-only --no-privileges \
+      | grep -v -e '^-- Dumped from' -e '^\\restrict' -e '^\\unrestrict' \
+      | sed -E -e '/CONSTRAINT .*CHECK/s/\(/ /g' -e '/CONSTRAINT .*CHECK/s/\)/ /g' \
+              -e '/CONSTRAINT .*CHECK/s/\[/ /g' -e '/CONSTRAINT .*CHECK/s/\]/ /g' \
+              -e '/CONSTRAINT .*CHECK/s/::character varying//g' -e '/CONSTRAINT .*CHECK/s/::text//g' \
+              -e '/CONSTRAINT .*CHECK/s/ ,/,/g' -e '/CONSTRAINT .*CHECK/s/ +/ /g'
+  else
+    docker exec db pg_dump --schema-only --no-owner --no-privileges -U postgres -d "$1" \
+      | grep -v -e '^-- Dumped from' -e '^\\restrict' -e '^\\unrestrict' \
+      | sed -E -e '/CONSTRAINT .*CHECK/s/\(/ /g' -e '/CONSTRAINT .*CHECK/s/\)/ /g' \
+              -e '/CONSTRAINT .*CHECK/s/\[/ /g' -e '/CONSTRAINT .*CHECK/s/\]/ /g' \
+              -e '/CONSTRAINT .*CHECK/s/::character varying//g' -e '/CONSTRAINT .*CHECK/s/::text//g' \
+              -e '/CONSTRAINT .*CHECK/s/ ,/,/g' -e '/CONSTRAINT .*CHECK/s/ +/ /g'
+  fi
+}
+
+dev_rows() { # <db> dev|local → суммарное число строк public
   local q
   if [ "$2" = "dev" ]; then
-    export PGHOST="$DEV_HOST" PGPORT="${DEV_PORT:-5432}" PGUSER="$DEV_USER" PGPASSWORD="$DEV_PASSWORD" PGDATABASE=postgres
-    q="$(psql "$(dev_ci "$1")" -tAc "SELECT coalesce(string_agg(format('SELECT %L AS t, count(*) AS n FROM %I.%I', tablename, schemaname, tablename), ' UNION ALL '),'SELECT 0 AS t, 0 AS n') FROM pg_tables WHERE schemaname='public'")"
-    psql "$(dev_ci "$1")" -tAc "$q" | awk -F'|' '{s+=$2} END{print s+0}'
+    q="$(dev_psql "$1" "SELECT coalesce(string_agg(format('SELECT %L AS t, count(*) AS n FROM %I.%I', tablename, schemaname, tablename), ' UNION ALL '),'SELECT 0 AS t, 0 AS n') FROM pg_tables WHERE schemaname='public'")"
+    dev_psql "$1" "$q" | awk -F'|' '{s+=$2} END{print s+0}'
   else
     q="$(docker exec db psql -X -tA -U postgres -d "$1" -c "SELECT coalesce(string_agg(format('SELECT %L AS t, count(*) AS n FROM %I.%I', tablename, schemaname, tablename), ' UNION ALL '),'SELECT 0 AS t, 0 AS n') FROM pg_tables WHERE schemaname='public'")"
     docker exec db psql -X -tA -U postgres -d "$1" -c "$q" | awk -F'|' '{s+=$2} END{print s+0}'
   fi
 }
 
-cmd_dev_check() {
+dev_ensure_db() { # <db> - шаг 1: БД существует или создаётся
+  local n
+  n="$(docker exec db psql -X -tA -U postgres -d postgres -c "SELECT 1 FROM pg_database WHERE datname='$1'" 2>/dev/null | tr -d '[:space:]')"
+  [ "$n" = "1" ] && return 0
+  docker exec db psql -X -q -U postgres -d postgres -c "CREATE DATABASE \"$1\"" || die "не создана БД $1"
+  info "шаг 1: БД $1 создана"
+}
+
+dev_migrate() { # шаг 2: миграции сервиса из origin/develop (detached worktree)
+  local svc="$1" db="$2"
+  local repo="$UPL_HOME/services/$(svc_repo "$svc")"
+  git -C "$repo" rev-parse -q --verify origin/develop >/dev/null || die "в $(svc_repo "$svc") нет origin/develop"
+  local wt="$DEV_MIGRATE_DIR/$(svc_repo "$svc")"
+  mkdir -p "$DEV_MIGRATE_DIR"
+  [ -d "$wt" ] || git -C "$repo" worktree add --detach "$wt" origin/develop >/dev/null \
+    || die "worktree миграций для $(svc_repo "$svc") не создан"
+  local envf="$DEV_MIGRATE_DIR/$svc.env"
+  cp "$wt/configs/.env.example" "$envf"
+  env_set "$envf" DB_HOST localhost
+  env_set "$envf" DB_PORT 5432
+  env_set "$envf" DB_NAME "$db"
+  ( cd "$wt" && CONFIG_PATH="$envf" go run ./cmd/migrate -direction up >/dev/null ) \
+    || die "миграции $svc ($db) из origin/develop упали"
+  local v m
+  v="$(docker exec db psql -X -tA -U postgres -d "$db" -c 'SELECT version FROM schema_migrations' 2>/dev/null | tr -d '[:space:]')"
+  m="$(ls "$wt/migrations"/*.up.sql 2>/dev/null | sed 's!.*/!!;s/_.*//' | sort -n | tail -1)"
+  info "шаг 2: $db = $v (origin/develop max $m)"
+  git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1
+  rm -f "$envf"
+}
+
+dev_schema_match() { # <db> → 0 если схемы идентичны
+  local a="$RT/.schema-dev-$1.sql" b="$RT/.schema-local-$1.sql"
+  dev_schema_dump "$1" dev > "$a"
+  dev_schema_dump "$1" local > "$b"
+  diff -q "$a" "$b" >/dev/null 2>&1
+  local rc=$?
+  rm -f "$a" "$b"
+  return $rc
+}
+
+cmd_dev_sync() { # шаги 1-4: БД+read-only → миграции из develop → сверка схем → human-gate/перелив
   eval "$(dev_env)"
-  export PGPASSWORD="$DEV_PASSWORD" PGHOST="$DEV_HOST" PGPORT="${DEV_PORT:-5432}" PGUSER="$DEV_USER" PGDATABASE=postgres
-  local d r l rd rl
-  printf '%-10s %-13s %-13s %-8s %-8s %s\n' "DB" "SCHEMA(dev)" "SCHEMA(local)" "ROWS(dev)" "ROWS(local)" "ИТОГ"
+  local d svc db ro
+  info "шаг 1: БД + проверка подключения к develop (read-only)"
+  ro="$(dev_psql auth "select current_setting('default_transaction_read_only')" 2>&1)" \
+    || die "develop недоступен: $ro"
+  [ "$ro" = "on" ] || die "подключение к develop НЕ в read-only (default_transaction_read_only=$ro) - по правилу продолжение запрещено"
+  info "шаг 1: подключение read-only подтверждено"
+  for d in $DEV_DBS; do dev_ensure_db "$d"; done
+  info "шаг 2: миграции из origin/develop"
+  for svc in auth user catalog ord report tracking; do
+    db="$(svc_dbname "$svc")"
+    dev_migrate "$svc" "$db"
+  done
+  info "шаг 3: сверка схем (версии миграций → детальная)"
+  local mismatch="" dv lv
   for d in $DEV_DBS; do
-    r="$(psql "$(dev_ci "$d")" -tAc "select version from schema_migrations" 2>/dev/null | tr -d '[:space:]')"
-    l="$(docker exec db psql -X -tA -U postgres -d "$d" -c "select version from schema_migrations" 2>/dev/null | tr -d '[:space:]')"
+    dv="$(dev_psql "$d" 'select version from schema_migrations' 2>/dev/null | tr -d '[:space:]')"
+    lv="$(docker exec db psql -X -tA -U postgres -d "$d" -c 'select version from schema_migrations' 2>/dev/null | tr -d '[:space:]')"
+    if [ "$((10#${dv:-0}))" != "$((10#${lv:-0}))" ]; then
+      die "шаг 3: $d - версии миграций расходятся (develop=${dv:-?} local=${lv:-?}) - стоп, разбор вручную"
+    fi
+    if dev_schema_match "$d"; then
+      info "шаг 3: $d - версия $lv, схема совпадает"
+    else
+      info "шаг 3: $d - версия $lv, схема РАСХОДИТСЯ"
+      mismatch="$mismatch $d"
+    fi
+  done
+  info "шаг 4: сверка строк; схема не совпала - human-gate"
+  local report="" before_f after_f diff_tables action changed a
+  for d in $DEV_DBS; do
+    before_f="$RT/.rows-before-$d"; after_f="$RT/.rows-after-$d"
+    dev_table_counts "$d" local | sort > "$before_f"
+    action="не обновлялась"
+    case " $mismatch " in
+      *" $d "*)
+        printf 'шаг 4: схема %s расходится с develop. [к]лонировать полным дампом с develop / [п]ропустить? ' "$d"
+        a=""
+        read -r a || a=""
+        case "$a" in
+          к*|К*)
+            action="обновлена (клонирование: схема разошлась)"
+            info "шаг 4: $d - клонирование полным дампом"
+            docker exec db psql -X -q -U postgres -d postgres -c "DROP DATABASE IF EXISTS \"$d\" WITH (FORCE)" >/dev/null
+            docker exec db psql -X -q -U postgres -d postgres -c "CREATE DATABASE \"$d\"" >/dev/null
+            dev_pg_dump "$d" | docker exec -i \
+              -e PGPASSWORD="$DEV_PASSWORD" -e PGOPTIONS='-c session_replication_role=replica' \
+              db psql -X -q -1 -v ON_ERROR_STOP=1 -U postgres -d "$d" -f - >/dev/null \
+              || die "restore $d из полного дампа не прошёл"
+            info "шаг 4: $d пересобрана" ;;
+          *)
+            action="не обновлялась (схема разошлась, решение человека)"
+            info "шаг 4: $d - пропущено по решению человека" ;;
+        esac
+        dev_table_counts "$d" local | sort > "$after_f"
+        changed="$(awk -F'|' 'NR==FNR{b[$1]=$2; next} b[$1]!=$2{printf "%s: %s → %s; ", $1, b[$1]+0, $2+0}' "$before_f" "$after_f")"
+        if [ -n "$changed" ]; then
+          report="$report
+$d: $action; изменившиеся таблицы: ${changed%; }"
+        else
+          report="$report
+$d: $action; изменившихся таблиц нет"
+        fi
+        rm -f "$before_f" "$after_f"
+        continue ;;
+    esac
+    # схема совпадает: перелив данных только при несовпадении строк хотя бы одной таблицы
+    # (develop против локального снапшота, а не локальное с локальным)
+    local diff_tables
+    diff_tables="$(comm -3 <(dev_table_counts "$d" dev | sort) "$before_f" | awk -F'|' '{print $1}' | tr -d ' ' | tr '\n' ' ')"
+    if [ -n "$(echo $diff_tables)" ]; then
+      action="обновлена (перелив данных)"
+      info "шаг 4: $d - расхождение строк в таблицах:$diff_tables - перелив данных"
+      local list
+      list="$(docker exec db psql -X -tA -U postgres -d "$d" -c "SELECT string_agg(format('%I.%I', schemaname, tablename), ', ') FROM pg_tables WHERE schemaname='public' AND tablename <> 'schema_migrations'")"
+      [ -n "$list" ] && docker exec db psql -X -q -U postgres -d "$d" -c "TRUNCATE $list CASCADE"
+      dev_pg_dump "$d" --data-only --exclude-table=schema_migrations | docker exec -i \
+        -e PGPASSWORD="$DEV_PASSWORD" -e PGOPTIONS='-c session_replication_role=replica' \
+        db psql -X -q -1 -v ON_ERROR_STOP=1 -U postgres -d "$d" -f - >/dev/null \
+        || die "перелив данных $d не прошёл"
+      info "шаг 4: $d - данные перелиты"
+    fi
+    dev_table_counts "$d" local | sort > "$after_f"
+    changed="$(awk -F'|' 'NR==FNR{b[$1]=$2; next} b[$1]!=$2{printf "%s: %s → %s; ", $1, b[$1]+0, $2+0}' "$before_f" "$after_f")"
+    if [ -n "$changed" ]; then
+      report="$report
+$d: $action; изменившиеся таблицы: ${changed%; }"
+    else
+      report="$report
+$d: $action; изменившихся таблиц нет"
+    fi
+    rm -f "$before_f" "$after_f"
+  done
+  info "итог по БД:"
+  info "$report"
+  cmd_dev_check
+}
+
+dev_table_counts() { # <db> dev|local → строки "таблица|число" (только public)
+  local q
+  if [ "$2" = "dev" ]; then
+    q="$(dev_psql "$1" "SELECT coalesce(string_agg(format('SELECT %L AS t, count(*) AS n FROM %I.%I', tablename, schemaname, tablename), ' UNION ALL '),'SELECT 0 AS t, 0 AS n') FROM pg_tables WHERE schemaname='public'")"
+    dev_psql "$1" "$q"
+  else
+    q="$(docker exec db psql -X -tA -U postgres -d "$1" -c "SELECT coalesce(string_agg(format('SELECT %L AS t, count(*) AS n FROM %I.%I', tablename, schemaname, tablename), ' UNION ALL '),'SELECT 0 AS t, 0 AS n') FROM pg_tables WHERE schemaname='public'")"
+    docker exec db psql -X -tA -U postgres -d "$1" -c "$q"
+  fi
+}
+
+cmd_dev_check() { # отчёт: версии, строки, структурная сверка схем
+  eval "$(dev_env)"
+  local d rd rl
+  printf '%-10s %-8s %-8s %-9s %-9s %s\n' "DB" "SCHEMA(dev)" "SCHEMA(loc)" "ROWS(dev)" "ROWS(loc)" "ИТОГ"
+  for d in $DEV_DBS; do
+    local r="$(dev_psql "$d" 'select version from schema_migrations' 2>/dev/null | tr -d '[:space:]')"
+    local l="$(docker exec db psql -X -tA -U postgres -d "$d" -c 'select version from schema_migrations' 2>/dev/null | tr -d '[:space:]')"
     rd="$(dev_rows "$d" dev)"; rl="$(dev_rows "$d" local)"
     local ok=OK
-    [ "$((10#${r:-0}))" = "$((10#${l:-0}))" ] && [ "$rd" = "$rl" ] || ok=РАСХОЖДЕНИЕ
-    printf '%-10s %-13s %-13s %-8s %-8s %s\n' "$d" "${r:-?}" "${l:-?}" "$rd" "$rl" "$ok"
-  done
-}
-
-cmd_dev_dump() { # [db...] → $RT/devdump/<db>.sql (600)
-  eval "$(dev_env)"
-  export PGPASSWORD="$DEV_PASSWORD"
-  mkdir -p "$RT/devdump" && chmod 700 "$RT/devdump"
-  local d dbs
-  if [ $# -gt 0 ]; then dbs="$*"; else dbs=$DEV_DBS; fi
-  for d in $dbs; do
-    docker exec -e PGPASSWORD="$DEV_PASSWORD" \
-      -e PGOPTIONS='-c default_transaction_read_only=on' \
-      db pg_dump --host "$DEV_HOST" --port "${DEV_PORT:-5432}" --username "$DEV_USER" \
-      --dbname "$d" --data-only --exclude-table=schema_migrations \
-      --no-owner --no-privileges -f /tmp/devdump-$d.sql \
-      || { docker exec db rm -f /tmp/devdump-$d.sql; die "дамп $d не прошёл"; }
-    docker cp db:/tmp/devdump-$d.sql "$RT/devdump/$d.sql" >/dev/null
-    docker exec db rm -f /tmp/devdump-$d.sql
-    chmod 600 "$RT/devdump/$d.sql"
-    info "$d: дамп $(du -h "$RT/devdump/$d.sql" | cut -f1)"
-  done
-}
-
-cmd_dev_fill() { # [db...] - предочистка + restore + сверка; дампы снимаются
-  eval "$(dev_env)"
-  export PGPASSWORD="$DEV_PASSWORD"
-  local d list rd rl dbs
-  if [ $# -gt 0 ]; then dbs="$*"; else dbs=$DEV_DBS; fi
-  for d in $dbs; do
-    [ -f "$RT/devdump/$d.sql" ] || cmd_dev_dump "$d"
-    list="$(docker exec db psql -X -tA -U postgres -d "$d" -c "SELECT string_agg(format('%I.%I', schemaname, tablename), ', ') FROM pg_tables WHERE schemaname='public' AND tablename <> 'schema_migrations'")"
-    [ -n "$list" ] && docker exec db psql -X -q -U postgres -d "$d" -c "TRUNCATE $list CASCADE" || die "предочистка $d не прошла"
-    docker cp "$RT/devdump/$d.sql" db:/tmp/devdump-$d.sql >/dev/null
-    docker exec -e PGPASSWORD="$DEV_PASSWORD" -e PGOPTIONS='-c session_replication_role=replica' \
-      db psql -X -q -1 -v ON_ERROR_STOP=1 -U postgres -d "$d" -f /tmp/devdump-$d.sql \
-      || { docker exec db rm -f /tmp/devdump-$d.sql; die "restore $d не прошёл"; }
-    docker exec db rm -f /tmp/devdump-$d.sql
-    rm -f "$RT/devdump/$d.sql"
-    rd="$(dev_rows "$d" dev)"; rl="$(dev_rows "$d" local)"
-    info "$d: строки develop=$rd local=$rl $([ "$rd" = "$rl" ] && echo OK || echo РАСХОЖДЕНИЕ); дамп удалён"
+    [ "$((10#${r:-0}))" = "$((10#${l:-0}))" ] && dev_schema_match "$d" || ok=РАСХОЖДЕНИЕ
+    printf '%-10s %-8s %-8s %-9s %-9s %s\n' "$d" "${r:-?}" "${l:-?}" "$rd" "$rl" "$ok (строки: живой develop, расхождение счётчиков может быть benign)"
   done
 }
 
@@ -838,10 +991,9 @@ case "${1:-}" in
     shift
     sub="${1:-}"; shift || true
     case "$sub" in
+      sync) cmd_dev_sync ;;
       check) cmd_dev_check ;;
-      dump) cmd_dev_dump "$@" ;;
-      fill) cmd_dev_fill "$@" ;;
-      *) die "dev: неизвестное действие '$sub' (check|dump|fill)" ;;
+      *) die "dev: неизвестное действие '$sub' (sync|check)" ;;
     esac ;;
   __supervisor) shift; cmd_supervisor "$@" ;;
   ""|-h|--help|help)

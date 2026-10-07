@@ -21,7 +21,7 @@ name: upl-infra
 services:
   # Единый postgres 17: auth, user, catalog, ord, report, tracking.
   db:
-    image: postgres:17-alpine
+    image: postgres:17.11-alpine
     container_name: db
     ports:
       - "5432:5432"
