@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Единая локальная инфраструктура UPL: общий compose-блок (db, db17, redis,
+# Единая локальная инфраструктура UPL: общий compose-блок (db, redis,
 # kafka, rabbitmq, minio, jaeger, envoy) + управление экземплярами сервисов
 # на хосте, поимённо по ветке запуска.
 #
@@ -54,7 +54,7 @@ svc_port() {
 # Какой общий postgres держит основную БД сервиса (пусто — БД нет).
 svc_dbhost() {
   case "$1" in
-    auth|user|ord) echo db ;; catalog|report|tracking) echo db17 ;; bff) return 1 ;;
+    auth|user|ord|catalog|report|tracking) echo db ;; bff) return 1 ;;
   esac
 }
 
@@ -106,16 +106,18 @@ env_set() { # <file> <key> <value>
   mv "$1.tmp" "$1"
 }
 
-# Рендерит .env экземпляра из configs/.env.example репо + общие оверрайды.
-render_env() { # <svc> <env-path-out> <http-port> <db-name> [task 0|1]
-  local svc="$1" out="$2" port="$3" dbname="$4" is_task="${5:-0}"
-  local repo src dbh dbport
-  repo="$UPL_HOME/services/$(svc_repo "$svc")"
-  src="$repo/configs/.env.example"
+# Рендерит .env экземпляра из configs/.env.example выбранного дерева
+# (задача - из worktree: обязательные ключи задачной конфигурации не теряются).
+render_env() { # <svc> <src-dir> <env-path-out> <http-port> <db-name> [task 0|1]
+  local svc="$1" src_dir="$2" out="$3" port="$4" dbname="$5" is_task="${6:-0}"
+  # src локален обязательно: без local динамический скоупинг Bash перезапишет
+  # src вызывающего cmd_svc_up путём до .env.example (регрессия 9997).
+  local src dbh dbport
+  src="$src_dir/configs/.env.example"
   [ -f "$src" ] || die "$src не найден"
   cp "$src" "$out"
   dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
-  dbport=5432; [ "$dbh" = "db17" ] && dbport=5433
+  dbport=5432
   env_set "$out" HTTP_PORT "$port"
   if [ -n "$dbh" ]; then
     env_set "$out" DB_HOST localhost
@@ -160,22 +162,22 @@ render_env() { # <svc> <env-path-out> <http-port> <db-name> [task 0|1]
 # ── БД ───────────────────────────────────────────────────────────────────────
 
 psql_db() { # <dbhost> <dbname> <sql>
-  docker exec "upl-$1" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$2" -c "$3"
+  docker exec "$1" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$2" -c "$3"
 }
 
 ensure_db() { # <dbhost> <dbname>
   local n
-  n="$(docker exec "upl-$1" psql -X -tA -U postgres -d postgres -c "SELECT 1 FROM pg_database WHERE datname='$2'" 2>/dev/null | tr -d '[:space:]')"
+  n="$(docker exec "$1" psql -X -tA -U postgres -d postgres -c "SELECT 1 FROM pg_database WHERE datname='$2'" 2>/dev/null | tr -d '[:space:]')"
   [ "$n" = "1" ] && return 0
-  docker exec "upl-$1" psql -X -q -U postgres -d postgres -c "CREATE DATABASE \"$2\"" || die "не создана БД $2 на upl-$1"
+  docker exec "$1" psql -X -q -U postgres -d postgres -c "CREATE DATABASE \"$2\"" || die "не создана БД $2 на $1"
 }
 
 drop_db() { # <dbhost> <dbname>
-  docker exec "upl-$1" psql -X -q -U postgres -d postgres -c "DROP DATABASE IF EXISTS \"$2\" WITH (FORCE)"
+  docker exec "$1" psql -X -q -U postgres -d postgres -c "DROP DATABASE IF EXISTS \"$2\" WITH (FORCE)"
 }
 
 migrate_applied_version() { # <dbhost> <dbname> → число или 0
-  docker exec "upl-$1" psql -X -tA -U postgres -d "$2" -c "SELECT version FROM schema_migrations" 2>/dev/null | tr -d '[:space:]' || true
+  docker exec "$1" psql -X -tA -U postgres -d "$2" -c "SELECT version FROM schema_migrations" 2>/dev/null | tr -d '[:space:]' || true
 }
 
 run_migrate() { # <src-dir> <env-file> up|down
@@ -196,6 +198,9 @@ src_checksum() { # <src-dir> <env-file>
 cmd_supervisor() { # __supervisor <name> <src> <env> <proc>
   local name="$1" src="$2" env="$3" proc="$4"
   local child="" last="" sum
+  # Своё имя процесса пишет сам супервизор: $! снаружи - pid обёртки nohup,
+  # а не выжившего процесса, и pidfile с ним всегда показывает «остановлен».
+  printf '%s\n' "$$" > "$(pidfile "$name")"
   trap ' [ -n "$child" ] && { pkill -P "$child" 2>/dev/null; kill "$child" 2>/dev/null; }; exit 0 ' TERM INT
   cd "$src" || exit 1
   export CONFIG_PATH="$env"
@@ -334,18 +339,17 @@ cmd_infra() {
     up)
       compose up -d $extra || die "docker compose up упал"
       local i up
-      for i in db db17 redis; do
+      for i in db redis; do
         up=""
         for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-          [ "$(docker inspect "upl-$i" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && { up=1; break; }
+          [ "$(docker inspect "$i" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && { up=1; break; }
           sleep 1
         done
-        [ -n "$up" ] || die "upl-$i не стал healthy"
+        [ -n "$up" ] || die "$i не стал healthy"
       done
       # Основные БД гарантируем и на существующем volume (initdb — только на пустом).
-      docker exec -i upl-db psql -X -q -U postgres -d postgres -f - < "$SCRIPT_DIR/initdb/db15/01-databases.sql"
-      docker exec -i upl-db17 psql -X -q -U postgres -d postgres -f - < "$SCRIPT_DIR/initdb/db17/01-databases.sql"
-      info "инфраструктура поднята: upl-db(15):5432 upl-db17(17):5433 redis:6379 kafka:9092/9094 rabbitmq:5672 minio:9000 jaeger:16686 envoy:8110"
+      docker exec -i db psql -X -q -U postgres -d postgres -f - < "$SCRIPT_DIR/initdb/01-databases.sql"
+      info "инфраструктура поднята: db(17):5432 redis:6379 kafka:9092/9094 rabbitmq:5672 minio:9000 jaeger:16686 envoy:8110"
       ;;
     down)
       compose down || die "docker compose down упал"
@@ -373,7 +377,7 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     esac
   done
   command -v go >/dev/null || die "go не найден в PATH (/usr/local/go/bin)"
-  docker ps --format '{{.Names}}' | grep -qx upl-db || die "инфраструктура не поднята: upl-infra.sh infra up"
+  docker ps --format '{{.Names}}' | grep -qx db || die "инфраструктура не поднята: upl-infra.sh infra up"
 
   local repo src name port dbname env inst_task=0
   repo="$UPL_HOME/services/$(svc_repo "$svc")" || die "неизвестный сервис $svc"
@@ -408,7 +412,7 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   fi
   # env рендерим до миграций: мигать можно только с проверенным CONFIG_PATH
   # (environment.md), общий рендер даёт хост/порт/имя БД этого экземпляра.
-  render_env "$svc" "$(envfile "$name")" "$port" "$dbname" "$inst_task"
+  render_env "$svc" "$src" "$(envfile "$name")" "$port" "$dbname" "$inst_task"
   if [ -n "$(svc_dbhost "$svc" 2>/dev/null || true)" ] && [ -d "$src/cmd/migrate" ]; then
     run_migrate "$src" "$(envfile "$name")" up
     local want have
@@ -424,10 +428,9 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   fi
   [ "$svc" = "auth" ] && { [ -e "$src/configs/.env" ] || ln -s "$(envfile "$name")" "$src/configs/.env"; }
   nohup bash "$SELF" __supervisor "$name" "$src" "$(envfile "$name")" "$proc" >/dev/null 2>&1 &
-  local sup=$!
-  disown "$sup" 2>/dev/null
-  echo "$sup" > "$(pidfile "$name")"
-  if docker ps --format '{{.Names}}' | grep -qx upl-envoy; then
+  disown 2>/dev/null
+  sleep 1 # супервизор успел записать свой pid в pidfile
+  if docker ps --format '{{.Names}}' | grep -qx envoy; then
     envoy_rewrite_backends_live # живые инстансы поменялись — file provider перечитает
   fi
   info "$name поднят: порт $port${dbname:+, БД $dbname}, лог $(logfile "$name")"
@@ -445,7 +448,7 @@ cmd_svc_down() {
   done
   local name="$svc"; [ -n "$sfx" ] && name="$svc-$sfx"
   stop_instance "$name"
-  if docker ps --format '{{.Names}}' | grep -qx upl-envoy; then
+  if docker ps --format '{{.Names}}' | grep -qx envoy; then
     envoy_rewrite_backends_live
   fi
   info "$name остановлен"
@@ -528,30 +531,38 @@ instance_task_port() { # <svc> → порт живого экземпляра з
   done
 }
 
-changed_methods_diff() { # <svc> <worktree> → список изменённых методов или пусто
+changed_methods_diff() { # <svc> <worktree> → "changed|empty|nospec <список>"
   local svc="$1" wt="$2" repo="$UPL_HOME/services/$(svc_repo "$svc")"
   if [ "$svc" = "bff" ]; then
     local a="$repo/configs/aggregation.yaml" b="$wt/configs/aggregation.yaml"
-    [ -f "$a" ] && [ -f "$b" ] || return 0
-    { diff <(grep -E '^[[:space:]]+(method|path):' "$a") <(grep -E '^[[:space:]]+(method|path):' "$b") \
-      | grep '^>' || true; } | paste -sd' ' - | sed 's/[[:space:]]\+/ /g'
+    [ -f "$a" ] && [ -f "$b" ] || { echo "nospec"; return 0; }
+    local list
+    list="$({ diff <(grep -E '^[[:space:]]+(method|path):' "$a") <(grep -E '^[[:space:]]+(method|path):' "$b") \
+      | grep '^[<>]' || true; } | paste -sd' ' - | sed 's/[[:space:]]\+/ /g')"
+    [ -n "$list" ] && echo "changed $list" || echo "empty"
     return 0
   fi
   local a="$repo/api/docs/swagger.json" b="$wt/api/docs/swagger.json"
-  [ -f "$a" ] && [ -f "$b" ] || return 0
-  python3 - "$a" "$b" <<'PY'
+  [ -f "$a" ] && [ -f "$b" ] || { echo "nospec"; return 0; }
+  local res
+  res="$(python3 - "$a" "$b" <<'PY'
 import json, sys
-a = json.load(open(sys.argv[1])).get("paths", {})
-b = json.load(open(sys.argv[2])).get("paths", {})
-new = []
-for p, ops in b.items():
-    for m, op in ops.items():
-        if m not in ("get", "post", "put", "patch", "delete"):
-            continue
-        if p not in a or m not in a[p]:
-            new.append(f"{m.upper()} {p}")
-print(" ".join(new))
+def ops(path):
+    out = {}
+    for p, items in json.load(open(path)).get("paths", {}).items():
+        for m, op in items.items():
+            if m in ("get", "post", "put", "patch", "delete"):
+                out[f"{m.upper()} {p}"] = json.dumps(op, sort_keys=True)
+    return out
+a, b = ops(sys.argv[1]), ops(sys.argv[2])
+changed = []
+for k in sorted(set(a) | set(b)):
+    if a.get(k) != b.get(k):
+        changed.append(k)
+print("empty" if not changed else "changed " + " ".join(changed))
 PY
+)"
+  echo "$res"
 }
 
 cmd_accept() { # <UPL-XXXX>
@@ -574,18 +585,26 @@ cmd_accept() { # <UPL-XXXX>
   done
 
   envoy_render_for_task "$sfx"
-  if ! docker ps --format '{{.Names}}' | grep -qx upl-envoy; then
+  if ! docker ps --format '{{.Names}}' | grep -qx envoy; then
     compose up -d envoy || die "envoy не поднялся"
   fi
   sleep 2 # file provider подхватывает конфиг
 
   info ""
   info "Приёмка $key — envoy: http://localhost:8110"
+  local svc port methods res
   for svc in $affected; do
-    local port; port="$(instance_task_port "$svc")"
+    port="$(instance_task_port "$svc")"
     [ -n "$port" ] || port="$(svc_port "$svc")"
-    local methods; methods="$(changed_methods_diff "$svc" "$(worktree_path "$svc" "$sfx")")"
-    info "• $svc: http://localhost:$port/swagger/index.html${methods:+ — изменённые: $methods}"
+    res="$(changed_methods_diff "$svc" "$(worktree_path "$svc" "$sfx")")"
+    methods="${res#* }"
+    case "$res" in
+      empty) ;;
+      nospec)
+        info "• $svc: http://localhost:$port/swagger/index.html (спека не сгенерирована - изменённые методы сверь вручную)" ;;
+      changed*)
+        info "• $svc: http://localhost:$port/swagger/index.html - изменённые: $methods" ;;
+    esac
   done
 }
 
@@ -610,7 +629,7 @@ cmd_task_close() { # <UPL-XXXX>
       have="$(migrate_applied_version "$dbh" "$(svc_dbname "$svc")")"
       if [ -n "$want" ] && [ "$((10#${want:-0}))" -gt "$((10#${have:-0}))" ]; then
         local mainenv="$(envfile "$svc")"
-        [ -f "$mainenv" ] || { render_env "$svc" "$mainenv" "$(svc_port "$svc")" "$(svc_dbname "$svc")" 0; }
+        [ -f "$mainenv" ] || { render_env "$svc" "$UPL_HOME/services/$(svc_repo "$svc")" "$mainenv" "$(svc_port "$svc")" "$(svc_dbname "$svc")" 0; }
         run_migrate "$wt" "$mainenv" up
         info "$svc: миграции до $want применены на основную БД $(svc_dbname "$svc")"
       else
@@ -624,14 +643,15 @@ cmd_task_close() { # <UPL-XXXX>
     # 3. БД задачи.
     [ -n "$dbh" ] && { drop_db "$dbh" "$dbname" && info "$svc: БД $dbname удалена"; }
 
-    # 4. Worktree и ветка.
+    # 4. Worktree и ветка. Грязный worktree не удаляем: незакоммиченный код
+    # задачи снимает человек, авто-удаление касается только чистого дерева.
     if [ -d "$wt" ]; then
-      if git -C "$repo" worktree remove "$wt" 2>/dev/null; then
+      if [ -n "$(git -C "$wt" status --porcelain)" ]; then
+        info "$svc: worktree $(basename "$wt") ГРЯЗНЫЙ (незакоммиченные файлы) - оставлен; сними вручную после разбора"
+      elif git -C "$repo" worktree remove "$wt" 2>/dev/null; then
         info "$svc: worktree $(basename "$wt") снят"
-      elif git -C "$repo" worktree remove --force "$wt" 2>/dev/null; then
-        info "$svc: worktree $(basename "$wt") снят (--force: были незакоммиченные файлы)"
       else
-        info "$svc: worktree $(basename "$wt") НЕ снят — сними вручную (git worktree remove --force)"
+        info "$svc: worktree $(basename "$wt") НЕ снят - сними вручную (git worktree remove)"
       fi
     fi
     local branch="feature/UPL-$sfx"
@@ -645,7 +665,7 @@ cmd_task_close() { # <UPL-XXXX>
   done
 
   envoy_render_for_task ""
-  docker ps --format '{{.Names}}' | grep -qx upl-envoy && sleep 2
+  docker ps --format '{{.Names}}' | grep -qx envoy && sleep 2
   info "задача $key закрыта"
 }
 
@@ -657,9 +677,9 @@ cmd_seed() {
     catalog)
       local sql="$UPL_HOME/services/catalog-db-smoke.sql"
       [ -f "$sql" ] || die "$sql не найден"
-      docker exec -i upl-db17 psql -X -q -1 -v ON_ERROR_STOP=1 -v smoke_count=5 -U postgres -d catalog -f - < "$sql" \
+      docker exec -i db psql -X -q -1 -v ON_ERROR_STOP=1 -v smoke_count=5 -U postgres -d catalog -f - < "$sql" \
         || die "засев catalog не прошёл"
-      info "catalog засеян smoke-данными (db17)"
+      info "catalog засеян smoke-данными (db)"
       ;;
     *) die "seed: поддержан только catalog" ;;
   esac

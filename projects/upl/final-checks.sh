@@ -220,10 +220,9 @@ load_env_files() {
 # Контейнер принадлежит стенду этого сервиса, если его compose-проект развёрнут
 # из каталога сервиса. Без такой проверки общий кандидат `db` подхватывает
 # контейнер чужого стенда, и временная БД проверки миграций создаётся в нём
-# (SB-118): в docker ps станции обычно висит `db` соседнего сервиса.
-# Общий инфраструктурный блок UPL (upl-db/upl-db17, проект upl-infra) — общий
-# по построению для всех сервисов, проверка принадлежности сервиса к нему
-# не применяется.
+# (SB-118). С переходом на общий блок upl-infra контейнер `db` — единственный
+# postgres стенда: для disposable БД проверки он кандидат по построению, когда
+# кандидаты самого сервиса не нашлись.
 container_belongs_to_service() {
   local work_dir
   work_dir="$(docker inspect "$1" --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' 2>/dev/null)"
@@ -242,20 +241,15 @@ detect_db_container() {
     return
   fi
 
-  for candidate in "${SERVICE_NAME}-db" db; do
+  for candidate in "${SERVICE_NAME}-db"; do
     if grep -qx "$candidate" "$LOG_DIR/docker-ps.log" && container_belongs_to_service "$candidate"; then
       printf '%s' "$candidate"
       return
     fi
   done
 
-  # Общий инфраструктурный блок: любой из его postgres годен для disposable БД.
-  for candidate in upl-db upl-db17; do
-    if grep -qx "$candidate" "$LOG_DIR/docker-ps.log"; then
-      printf '%s' "$candidate"
-      return
-    fi
-  done
+  # Общий postgres стенда upl-infra (postgres 17, все БД сервисов).
+  grep -qx 'db' "$LOG_DIR/docker-ps.log" && printf '%s' 'db'
 }
 
 run_migration_check() {
@@ -289,7 +283,7 @@ run_migration_check() {
   db_container="$(detect_db_container)"
   if [[ -z "$db_container" ]]; then
     failed=1
-    status "migration up/down" "блокер: контейнер БД стенда ${SERVICE_NAME} не найден (кандидаты: \${DB_CONTAINER}, ${SERVICE_NAME}-db, db, upl-db, upl-db17; контейнер чужого стенда отвергнут — подними стенд сервиса или задай DB_CONTAINER)"
+    status "migration up/down" "блокер: контейнер БД стенда ${SERVICE_NAME} не найден (кандидаты: \${DB_CONTAINER}, ${SERVICE_NAME}-db, общий db; подними upl-infra.sh infra up или задай DB_CONTAINER)"
     return
   fi
 

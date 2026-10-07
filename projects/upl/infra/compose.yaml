@@ -7,7 +7,10 @@
 #
 # Постоянные БД сервисов живут здесь без суффикса: отсутствие суффикса
 # подразумевает develop. БД задачи (суффикс ключа UPL) создаёт и удаляет
-# upl-infra.sh на этих же инстансах postgres.
+# upl-infra.sh на этом же инстансе postgres.
+#
+# Группа — проект compose `upl-infra`: имена контейнеров без префикса не
+# повторяют её, тома получают префикс проекта автоматически.
 #
 # Запуск: upl-infra.sh infra up (экспортирует UPL_ENVOY_DIR и рендерит
 # конфиг envoy из services/envoy). Вручную:
@@ -16,10 +19,10 @@
 name: upl-infra
 
 services:
-  # postgres 15: auth, user, ord
+  # Единый postgres 17: auth, user, catalog, ord, report, tracking.
   db:
-    image: postgres:15
-    container_name: upl-db
+    image: postgres:17-alpine
+    container_name: db
     ports:
       - "5432:5432"
     environment:
@@ -28,26 +31,7 @@ services:
       POSTGRES_DB: postgres
     volumes:
       - db-data:/var/lib/postgresql/data
-      - ./initdb/db15:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
-      interval: 3s
-      timeout: 3s
-      retries: 30
-
-  # postgres 17: catalog, report, tracking
-  db17:
-    image: postgres:17-alpine
-    container_name: upl-db17
-    ports:
-      - "5433:5432"
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: postgres
-    volumes:
-      - db17-data:/var/lib/postgresql/data
-      - ./initdb/db17:/docker-entrypoint-initdb.d:ro
+      - ./initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
       interval: 3s
@@ -56,7 +40,7 @@ services:
 
   redis:
     image: redis:7.2-alpine
-    container_name: upl-redis
+    container_name: redis
     ports:
       - "6379:6379"
     volumes:
@@ -71,7 +55,7 @@ services:
   # для сервисов на хосте — .env сервисов используют localhost:9094.
   kafka:
     image: bitnamilegacy/kafka:3.9.0-debian-12-r9
-    container_name: upl-kafka
+    container_name: kafka
     ports:
       - "9092:9092"
       - "9094:9094"
@@ -91,7 +75,7 @@ services:
 
   rabbitmq:
     image: rabbitmq:4.2.5-management
-    container_name: upl-rabbitmq
+    container_name: rabbitmq
     ports:
       - "5672:5672"
       - "15672:15672"
@@ -100,7 +84,7 @@ services:
 
   minio:
     image: quay.io/minio/minio:latest
-    container_name: upl-minio
+    container_name: minio
     command: server /data --console-address ":9001"
     ports:
       - "9000:9000"
@@ -113,7 +97,7 @@ services:
 
   jaeger:
     image: jaegertracing/all-in-one:latest
-    container_name: upl-jaeger
+    container_name: jaeger
     ports:
       - "16686:16686"
       - "4317:4317"
@@ -123,23 +107,23 @@ services:
   # По умолчанию выключен: infra up --with-keycloak.
   keycloak:
     image: quay.io/keycloak/keycloak:24.0
-    container_name: upl-keycloak
+    container_name: keycloak
     profiles: [keycloak]
     command: start-dev
     ports:
       - "8180:8080"
 
-  # Разовая генерация сертификатов в общий volume до старта envoy.
+  # Разовая генерация сертификатов в общий каталог до старта envoy.
   envoy-certgen:
     image: envoyproxy/gateway:v1.8.2
-    container_name: upl-envoy-certgen
+    container_name: envoy-certgen
     command: ["certgen", "--local", "--config-home", "/workspace/.eg"]
     volumes:
       - ${UPL_ENVOY_DIR:?set UPL_ENVOY_DIR}:/workspace
 
   envoy:
     image: envoyproxy/gateway:v1.8.2
-    container_name: upl-envoy
+    container_name: envoy
     depends_on:
       envoy-certgen:
         condition: service_completed_successfully
@@ -154,7 +138,6 @@ services:
 
 volumes:
   db-data:
-  db17-data:
   redis-data:
   kafka-data:
   rabbitmq-data:
