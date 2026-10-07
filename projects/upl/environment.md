@@ -12,6 +12,30 @@
 - Проверки на Develop выполняй через версионированные сценарии `test-dev-rights`; read-only остаётся режимом по умолчанию для неописанных запросов,
   а POST/PUT/PATCH/DELETE разрешены только в сценарии с минимальным изменением, уникальным fixture или восстановлением и обязательным cleanup.
 
+## Локальный сквозной прогон через gateway
+
+- `final-checks.sh` репозиторий проверяет изолированно и envoy-роутинг не видит: методы bff и новые маршруты проверяй сквозным прогоном против `http://localhost:8110` до постановки MR.
+  Primary при недостижимости bff принимает запрос сам и молча игнорирует не свои параметры - каждый новый фильтр bff проверяй отдельным запросом через gateway.
+- Envoy поднимай в Docker из копии каталога `services/envoy` вне worktree.
+  В копии `config/backends.yaml` эндпоинты `ip: 127.0.0.1` заменяй на `fqdn: {hostname: host.docker.internal, port: <порт>}`: поле `ip` в envoy-gateway v1.8.2 валидируется как строгий IP и имени хоста не принимает.
+  В копии `standalone.yaml` пропиши пути ресурса `/workspace/config` и `configHome`/`dataHome: /workspace/.eg`. Затем:
+  ```bash
+  docker run --rm -v <копия>:/workspace -w /workspace envoyproxy/gateway:v1.8.2 certgen --local --config-home /workspace/.eg
+  docker run -d --name envoy-gateway -p 8110:8110 -v <копия>:/workspace -w /workspace \
+    --add-host=host.docker.internal:host-gateway envoyproxy/gateway:v1.8.2 \
+    server --config-path /workspace/standalone.yaml
+  ```
+  Правки `config/` копии file provider подхватывает без рестарта.
+- Сервисы поднимай на хосте из копий `.env` вне worktree: auth `8100`, user `8101`, catalog `8102`, bff `8113` - `CONFIG_PATH=<копия> go run ./cmd/api`.
+  БД auth, user и catalog - общий контейнер `db` user-стека. `cmd/api/debug.go` auth требует `configs/.env`: положи рядом симлинк на внешнюю копию (путь gitignored).
+- В копии auth обязательны непустой `AUTH_SIGNING_KEY` и `DEV_LOGIN_ENABLED=true`: пустой ключ даёт dev login без секрета HS256, и `/auth/validate` отвечает 401 с ошибкой подписи.
+- Миграции накатывай по разделу "Интеграционные тесты"; данные каталога для фильтров засевай `services/catalog-db-smoke.sql` одной транзакцией:
+  `docker exec -i db psql -X -q -1 -v ON_ERROR_STOP=1 -v smoke_count=5 -U postgres -d catalog -f - < catalog-db-smoke.sql`.
+- Локальную сессию получай `POST /auth/dev/login` с телом `{"role": "<код роли>"}` - локально роль в запросе передаётся, в отличие от develop.
+  Роль бери с реальным доступом к проверяемому методу: у `reg` нет `publishers-slim`, у `super_admin` почти всё; доступы смотри в `role_permission` БД auth.
+- Роуты сверяй с `services/envoy/config/routes.yaml`: у HTTPRoute `bff` query-матчер видит только первое значение ключа, регэкспы требуют полного совпадения значения.
+  Задача с bff-блоком в `aggregation.yaml` обязана включать правило envoy (см. профиль upl-services) - отсутствие правила ловит только этот прогон.
+
 ## Dev-авторизация для `test-dev-rights`
 
 - Все запросы к Develop идут через общий домен `https://develop.getblogger.ru` (или `UPL_DEV_BASE_URL`); сервис определяется только path.
