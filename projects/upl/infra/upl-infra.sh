@@ -8,8 +8,9 @@
 #                             порт, общая БД без суффикса; авто-рестарт на новый
 #                             код (опрос изменений исходников).
 #   задачи (суффикс ключа)  — worktree services/<repo>-UPL-<N>, ветка
-#                             feature/UPL-<N>, порт 9000+(порт-8000), БД
-#                             <db>_<N>; снимаются task close.
+#                             feature/UPL-<N>, порт 9000+(порт-8000); БД <db>_<N>
+#                             (клон основной) только у задач с миграциями, иначе
+#                             общая БД; снимаются task close.
 #
 # Usage: upl-infra.sh <команда>
 #   infra up|down|status [--with-keycloak]
@@ -166,11 +167,21 @@ psql_db() { # <dbhost> <dbname> <sql>
   docker exec "$1" psql -X -q -v ON_ERROR_STOP=1 -U postgres -d "$2" -c "$3"
 }
 
-ensure_db() { # <dbhost> <dbname>
-  local n
-  n="$(docker exec "$1" psql -X -tA -U postgres -d postgres -c "SELECT 1 FROM pg_database WHERE datname='$2'" 2>/dev/null | tr -d '[:space:]')"
-  [ "$n" = "1" ] && return 0
+db_exists() { # <dbhost> <dbname>
+  [ "$(docker exec "$1" psql -X -tA -U postgres -d postgres -c "SELECT 1 FROM pg_database WHERE datname='$2'" 2>/dev/null | tr -d '[:space:]')" = "1" ]
+}
+
+ensure_db() { # <dbhost> <dbname> [источник-клона: БД создаётся пустой и наполняется дампом источника]
+  db_exists "$1" "$2" && return 0
   docker exec "$1" psql -X -q -U postgres -d postgres -c "CREATE DATABASE \"$2\"" || die "не создана БД $2 на $1"
+  if [ -n "$3" ]; then
+    local dmp; dmp="$(mktemp -t upl-clone.XXXXXX)" || die "нет tmp для клона $2"
+    docker exec "$1" pg_dump -U postgres --dbname="$3" >"$dmp" \
+      || { rm -f "$dmp"; die "pg_dump $3 с $1 не прошёл"; }
+    docker exec -i "$1" psql -X -q -v ON_ERROR_STOP=1 -U postgres --dbname="$2" <"$dmp" \
+      || { rm -f "$dmp"; die "наполнение $2 из $3 не прошло"; }
+    rm -f "$dmp"
+  fi
 }
 
 drop_db() { # <dbhost> <dbname>
@@ -251,6 +262,15 @@ task_suffix() { # ключ/ветка → числовой суффикс
 
 worktree_path() { # <svc> <sfx> → каталог worktree
   printf '%s/services/%s-UPL-%s' "$UPL_HOME" "$(svc_repo "$1")" "$2"
+}
+
+# Есть ли у задачного дерева свои миграции относительно origin/develop; три точки:
+# миграции, приехавшие ребейзом из develop, своими не считаются.
+task_has_migrations() { # <worktree>
+  [ -d "$1/migrations" ] || return 1
+  git -C "$1" rev-parse -q --verify origin/develop >/dev/null 2>&1 \
+    || die "$(basename "$1"): нет origin/develop — не отделить миграции задачи"
+  [ -n "$(git -C "$1" diff --name-only origin/develop...HEAD -- migrations)" ]
 }
 
 instance_names() { # <svc> → имена живых/зафиксированных экземпляров (develop + задачи)
@@ -384,7 +404,7 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   command -v go >/dev/null || die "go не найден в PATH (/usr/local/go/bin)"
   docker ps --format '{{.Names}}' | grep -qx db || die "инфраструктура не поднята: upl-infra.sh infra up"
 
-  local repo src name port dbname env inst_task=0
+  local repo src name port dbname env inst_task=0 own_db=0
   repo="$UPL_HOME/services/$(svc_repo "$svc")" || die "неизвестный сервис $svc"
   if [ -n "${task_key:-}${sfx:-}" ]; then
     [ -z "$sfx" ] && sfx="$(task_suffix "$task_key")"
@@ -405,7 +425,14 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
         || die "нет ветки $branch у $(svc_repo "$svc") — создай её или проверь ключ"
     fi
     local dbh; dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
-    [ -n "$dbh" ] && ensure_db "$dbh" "$dbname"
+    # БД задачи - только у задачи с миграциями (diff против origin/develop); создаётся
+    # клоном основной БД. Задача без миграций работает на общей БД (environment.md).
+    if [ -n "$dbh" ] && task_has_migrations "$src"; then
+      ensure_db "$dbh" "$dbname" "$dn"
+      own_db=1
+    else
+      dbname="$dn"
+    fi
   else
     name="$svc"
     port="$(svc_port "$svc")"
@@ -418,7 +445,10 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   # env рендерим до миграций: мигать можно только с проверенным CONFIG_PATH
   # (environment.md), общий рендер даёт хост/порт/имя БД этого экземпляра.
   render_env "$svc" "$src" "$(envfile "$name")" "$port" "$dbname" "$inst_task"
-  if [ -n "$(svc_dbhost "$svc" 2>/dev/null || true)" ] && [ -d "$src/cmd/migrate" ]; then
+  # Миграции на общем инстансе - только у владельца БД: develop-экземпляр или задачный
+  # со своей <db>_<N>; миграции задачного дерева на общей БД запрещены (environment.md).
+  if [ -n "$(svc_dbhost "$svc" 2>/dev/null || true)" ] && [ -d "$src/cmd/migrate" ] \
+    && { [ "$inst_task" = "0" ] || [ "$own_db" = "1" ]; }; then
     run_migrate "$src" "$(envfile "$name")" up
     local want have
     want="$(max_migration "$src")"; have="$(migrate_applied_version "$(svc_dbhost "$svc")" "$dbname")"
@@ -496,6 +526,9 @@ cmd_svc_migrate() { # <svc> up|down [--task ...]
   [ -n "$(svc_dbhost "$svc" 2>/dev/null || true)" ] || { info "$svc без БД - миграций нет"; return 0; }
   [ -d "$src/cmd/migrate" ] || { info "$svc: cmd/migrate отсутствует - пропуск"; return 0; }
   [ -f "$(envfile "$name")" ] || die "нет env экземпляра $name — подними его: svc up $svc"
+  if [ -n "$sfx" ] && ! task_has_migrations "$src"; then
+    die "экземпляр $name без своей БД: задача без миграций работает на общей $(svc_dbname "$svc") — миграции задачного дерева на общей БД запрещены; гоняй их в изолированной <key>_check или применяй task close UPL-$sfx"
+  fi
   if [ "$dir" = "down" ]; then
     ( cd "$src" && CONFIG_PATH="$(envfile "$name")" go run ./cmd/migrate -direction down -steps 1 ) || die "откат не прошёл"
   else
