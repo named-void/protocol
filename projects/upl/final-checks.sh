@@ -311,17 +311,28 @@ run_migration_check() {
   # копируется), а без него cmd/migrate падает на подключении — проверка давала бы
   # ложное «не пройдено». Берём конфиг основного рабочего дерева репозитория, а при
   # его отсутствии — блокер, чтобы причина не читалась как дефект миграций.
-  base_env=""
-  for env_candidate in "$SERVICE_ROOT/configs/.env" "$SERVICE_ROOT/.env" "$SERVICE_MAIN_ROOT/configs/.env" "$SERVICE_MAIN_ROOT/.env"; do
-    if [[ -f "$env_candidate" ]]; then
-      base_env="$env_candidate"
-      break
-    fi
-  done
+  # FINAL_CHECKS_MIGRATION_ENV перекрывает поиск: временная БД создаётся в
+  # $DB_CONTAINER, и конфиг основного дерева с портом чужого стенда в verify
+  # уводил migrator мимо этого контейнера; перекрывающий конфиг обязан указывать
+  # на тот же контейнер.
+  base_env="${FINAL_CHECKS_MIGRATION_ENV:-}"
+  if [[ -n "$base_env" && ! -f "$base_env" ]]; then
+    failed=1
+    status "migration up/down" "блокер: FINAL_CHECKS_MIGRATION_ENV указывает на несуществующий файл $base_env"
+    return
+  fi
+  if [[ -z "$base_env" ]]; then
+    for env_candidate in "$SERVICE_ROOT/configs/.env" "$SERVICE_ROOT/.env" "$SERVICE_MAIN_ROOT/configs/.env" "$SERVICE_MAIN_ROOT/.env"; do
+      if [[ -f "$env_candidate" ]]; then
+        base_env="$env_candidate"
+        break
+      fi
+    done
+  fi
 
   if [[ -z "$base_env" ]]; then
     failed=1
-    status "migration up/down" "блокер: конфиг БД не найден (configs/.env или .env в $SERVICE_ROOT, $SERVICE_MAIN_ROOT)"
+    status "migration up/down" "блокер: конфиг БД не найден (configs/.env или .env в $SERVICE_ROOT, $SERVICE_MAIN_ROOT, FINAL_CHECKS_MIGRATION_ENV)"
     return
   fi
 
@@ -355,7 +366,7 @@ check_testify_convention() {
     # Файл с тестовыми функциями, но без собственных вызовов ассертов — обёртка
     # над общими testify-хелперами (Assert*/assert*): ассерты пишутся в
     # хелпере, требовать импорт testify здесь нечего.
-    grep -qE 't\.(Error|Errorf|Fatal|Fatalf|Fail|FailNow|Skip|Skipf)\(' "$f" || continue
+    grep -qE '\bt\.(Error|Errorf|Fatal|Fatalf|Fail|FailNow|Skip|Skipf)\(' "$f" || continue
     if ! grep -q 'stretchr/testify' "$f"; then
       violations=$((violations + 1))
       printf '%s\n' "$f" >> "$log_file"
