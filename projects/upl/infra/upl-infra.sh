@@ -108,6 +108,10 @@ env_set() { # <file> <key> <value>
   mv "$1.tmp" "$1"
 }
 
+env_get() { # <file> <key> → значение или пусто
+  sed -n "s/^$2=//p" "$1" 2>/dev/null | tail -n 1
+}
+
 # Рендерит .env экземпляра из configs/.env.example выбранного дерева
 # (задача - из worktree: обязательные ключи задачной конфигурации не теряются).
 render_env() { # <svc> <src-dir> <env-path-out> <http-port> <db-name> [task 0|1]
@@ -526,8 +530,18 @@ cmd_svc_migrate() { # <svc> up|down [--task ...]
   [ -n "$(svc_dbhost "$svc" 2>/dev/null || true)" ] || { info "$svc без БД - миграций нет"; return 0; }
   [ -d "$src/cmd/migrate" ] || { info "$svc: cmd/migrate отсутствует - пропуск"; return 0; }
   [ -f "$(envfile "$name")" ] || die "нет env экземпляра $name — подними его: svc up $svc"
-  if [ -n "$sfx" ] && ! task_has_migrations "$src"; then
-    die "экземпляр $name без своей БД: задача без миграций работает на общей $(svc_dbname "$svc") — миграции задачного дерева на общей БД запрещены; гоняй их в изолированной <key>_check или применяй task close UPL-$sfx"
+  # Gate по факту, а не только по дереву: env бывает поднят до появления миграций
+  # задачи и указывает на общую БД (environment.md).
+  if [ -n "$sfx" ]; then
+    local want_db have_db
+    want_db="$(svc_dbname "$svc")_$sfx"
+    have_db="$(env_get "$(envfile "$name")" DB_NAME)"
+    if [ "$have_db" != "$want_db" ]; then
+      if task_has_migrations "$src"; then
+        die "env $name указывает на БД '${have_db:-нет}', а не на свою $want_db — конфигурация поднята до появления миграций; подними экземпляр заново: svc up $svc --task UPL-$sfx"
+      fi
+      die "экземпляр $name не владеет БД (env указывает на ${have_db:-нет}) — миграции задачного дерева на общей БД запрещены; изолированный прогон - <key>_check, применение к основной БД - task close UPL-$sfx"
+    fi
   fi
   if [ "$dir" = "down" ]; then
     ( cd "$src" && CONFIG_PATH="$(envfile "$name")" go run ./cmd/migrate -direction down -steps 1 ) || die "откат не прошёл"
