@@ -363,6 +363,13 @@ envoy_base_branch() { # базовая ветка репозитория envoy: 
   return 1
 }
 
+git_worktree_add_local() { # <repo> <wt> <branch> — создаёт worktree и переносит локальные .env
+  ( cd "$1" && git worktree add "$2" "$3" 2>/dev/null ) \
+    || ( cd "$1" && git worktree add -b "$2" "$3" "origin/$3" 2>/dev/null ) \
+    || return 1
+  copy_local_env "$1" "$2"
+}
+
 # Есть ли у задачного дерева свои миграции относительно origin/develop; три точки:
 # миграции, приехавшие ребейзом из develop, своими не считаются.
 task_has_migrations() { # <worktree>
@@ -573,10 +580,8 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
       if [ "$inst_local" = "1" ]; then
         src="$repo" # worktree ещё нет — задачный экземпляр из самого чекаута: ветка уже в нём
       else
-        ( cd "$repo" && git worktree add "$src" "$branch" 2>/dev/null ) \
-          || ( cd "$repo" && git worktree add -b "$branch" "$src" "origin/$branch" 2>/dev/null ) \
+        git_worktree_add_local "$repo" "$src" "$branch" \
           || die "нет ветки $branch у $(svc_repo "$svc") — создай её или проверь ключ"
-        copy_local_env "$repo" "$src"
       fi
     fi
     local dbh; dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
@@ -765,10 +770,8 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
         [ "$ebr" = "$target" ] || die "switch: $ewt — на ветке '$ebr', а требуется '$target'; разберись вручную"
         applied="$ewt"
       else
-        ( cd "$esrc" && git worktree add "$ewt" "$target" 2>/dev/null ) \
-          || ( cd "$esrc" && git worktree add -b "$target" "$ewt" "origin/$target" 2>/dev/null ) \
+        git_worktree_add_local "$esrc" "$ewt" "$target" \
           || die "switch: не удалось создать worktree envoy для '$target'"
-        copy_local_env "$esrc" "$ewt"
         applied="$ewt"
       fi
       info "switch: envoy — конфиг применён из worktree задачи"
@@ -783,7 +786,7 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
     else
       [ -n "$ebase" ] || die "switch: не найдена базовая ветка репозитория envoy"
       local etmp="$UPL_HOME/services/envoy-UPL-0"
-      ( cd "$esrc" && git worktree add --detach "$etmp" "$ebase" >/dev/null 2>&1 ) \
+      git_worktree_add_local "$esrc" "$etmp" "$ebase" \
         || die "switch: не удалось получить базовый конфиг envoy из '$ebase'"
       envoy_render_from "$etmp"
       ( cd "$esrc" && git worktree remove --force "$etmp" >/dev/null 2>&1 ) || true
