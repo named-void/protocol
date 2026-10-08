@@ -352,6 +352,17 @@ copy_local_env() { # <repo> <worktree> — локальные (gitignored) .env 
   done
 }
 
+envoy_base_branch() { # базовая ветка репозитория envoy: первая существующая
+  local b repo="$UPL_HOME/services/envoy"
+  for b in master main develop; do
+    git -C "$repo" show-ref --verify -q "refs/heads/$b" && { echo "$b"; return 0; }
+  done
+  for b in master main develop; do
+    git -C "$repo" show-ref --verify -q "refs/remotes/origin/$b" && { echo "$b"; return 0; }
+  done
+  return 1
+}
+
 # Есть ли у задачного дерева свои миграции относительно origin/develop; три точки:
 # миграции, приехавшие ребейзом из develop, своими не считаются.
 task_has_migrations() { # <worktree>
@@ -764,7 +775,20 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
     fi
     envoy_render_from "$applied"
   elif [ "$target" = "develop" ]; then
-    envoy_render_for_task ""
+    # Основной чекаут envoy может стоять на задачной ветке (вне KNOWN_SERVICES
+    # switch его не переключает) - базовый конфиг берём из базовой ветки репозитория.
+    local ebase
+    if ebase="$(envoy_base_branch)" && [ "$(git -C "$esrc" branch --show-current 2>/dev/null)" = "$ebase" ]; then
+      envoy_render_from "$esrc"
+    else
+      [ -n "$ebase" ] || die "switch: не найдена базовая ветка репозитория envoy"
+      local etmp="$UPL_HOME/services/envoy-UPL-0"
+      ( cd "$esrc" && git worktree add --detach "$etmp" "$ebase" >/dev/null 2>&1 ) \
+        || die "switch: не удалось получить базовый конфиг envoy из '$ebase'"
+      envoy_render_from "$etmp"
+      ( cd "$esrc" && git worktree remove --force "$etmp" >/dev/null 2>&1 ) || true
+      info "switch: envoy — базовый конфиг взят из '$ebase' (чекаут на '$(git -C "$esrc" branch --show-current 2>/dev/null)')"
+    fi
     info "switch: envoy — применён develop-конфиг"
   fi
   [ -z "$failed" ] || die "не переключены:$failed — причины выше; остальные переключены"
