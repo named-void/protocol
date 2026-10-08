@@ -16,21 +16,29 @@
 #   infra up|down|status [--with-keycloak]
 #   svc up | svc down — up разворачивает экземпляры по текущим веткам чекаутов:
 #                       develop → разв-экземпляр, feature/UPL-N → задачный из этого же
-#                       каталога; down гасит разв-экземпляры, задачные — svc down --task
+#                       каталога; down гасит разв-экземпляры, задачные — svc down --task;
+#                       envoy (gateway) управляется теми же командами: up рендерит конфиг
+#                       из чекаута/worktree задачи и держит контейнер compose
 #   svc up|down|logs|status <svc> [--task UPL-XXXX | --branch <b> --suffix <N>] [--proc api|worker|consumer|poller]
+#                       <svc> — go-сервисы и envoy
 #   svc migrate <svc> [--task ...] up|down
-#   svc switch [<branch>] [--fetch] — переключить основные чекауты: у кого ветка
-#                       есть — на неё, у кого нет — на develop (без аргумента —
-#                       все на develop); поднятые develop-экземпляры переключённых
-#                       сервисов останавливаются; --fetch обновляет origin заранее;
-#                       envoy: конфиг из worktree задачи; на develop — develop-конфиг
+#   svc switch [<branch>] [--fetch] — переключить основные чекауты; без аргумента
+#                       или с develop|master|main каждый репозиторий встаёт на свою
+#                       основную ветку: develop, если она есть, иначе канон —
+#                       первая существующая из master/main; поднятые develop-
+#                       экземпляры переключённых сервисов останавливаются;
+#                       --fetch обновляет origin заранее; конфиг envoy рендерится
+#                       из основной ветки или из worktree задачи
 #   svc up --task UPL-XXXX — задачные экземпляры ветки сразу для всех сервисов,
-#                       где она есть (чекаут или worktree)
+#                       где она есть (чекаут или worktree), включая конфиг envoy
 #   seed catalog
 #   accept <UPL-XXXX>
 #   task close <UPL-XXXX>
 #   dev sync|check  — синхронизация/отчёт локальных БД с develop postgres (read-only)
 #   doctor
+#
+# Смена задачных экземпляров (svc up/down --task, task close) сама перерендеривает
+# env и перезапускает разв-экземпляры, чей адрес пира сменился.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -45,13 +53,18 @@ info() { printf '%s\n' "$1"; }
 
 # ── Реестр сервисов ──────────────────────────────────────────────────────────
 
+# go-сервисы: хост-процессы с реестровым портом и опциональной БД.
 KNOWN_SERVICES="auth user catalog report tracking ord bff"
+# gateway-сервисы: контейнеры compose, код = отрендеренный конфиг (envoy).
+GATEWAY_SERVICES="envoy"
+ALL_SERVICES="$KNOWN_SERVICES $GATEWAY_SERVICES"
 
 svc_repo() {
   case "$1" in
     auth) echo auth-service ;; user) echo user-service ;;
     catalog) echo catalog-service ;; report) echo report-service ;;
     tracking) echo tracking-service ;; ord) echo ord-service ;; bff) echo bff ;;
+    envoy) echo envoy ;;
     *) return 1 ;;
   esac
 }
@@ -60,13 +73,54 @@ svc_port() {
   case "$1" in
     auth) echo 8100 ;; user) echo 8101 ;; catalog) echo 8102 ;;
     report) echo 8103 ;; tracking) echo 8108 ;; ord) echo 8666 ;; bff) echo 8113 ;;
+    envoy) echo 8110 ;;
+  esac
+}
+
+svc_kind() { # go — хост-процесс; gateway — контейнер compose с рендер-конфигом
+  case "$1" in
+    auth|user|catalog|report|tracking|ord|bff) echo go ;;
+    envoy) echo gateway ;;
+    *) return 1 ;;
+  esac
+}
+
+# Основные ветки в порядке приоритета: в репозитории с develop вся работа
+# идёт с develop (master/main не используются); без develop — master, затем main.
+svc_base_branches() {
+  echo "develop master main"
+}
+
+svc_base_branch() { # <svc> → основная ветка: develop, если есть (local или origin), иначе первая из master/main
+  local repo b
+  repo="$UPL_HOME/services/$(svc_repo "$1")" || return 1
+  for b in $(svc_base_branches "$1"); do
+    if git -C "$repo" show-ref --verify -q "refs/heads/$b" \
+      || git -C "$repo" show-ref --verify -q "refs/remotes/origin/$b"; then
+      echo "$b"; return 0
+    fi
+  done
+  return 1
+}
+
+# Пиры сервиса: чьи URL входят в его env (см. render_env). Используется
+# refresh_dev_peers для рестарта задетых разв-экземпляров.
+svc_peers() {
+  case "$1" in
+    auth) echo user ;;
+    user) echo catalog ;;
+    catalog|report) echo user ;;
+    tracking) echo "user catalog" ;;
+    ord) echo catalog ;;
+    bff) echo "user catalog ord auth" ;;
+    *) return 1 ;;
   esac
 }
 
 # Какой общий postgres держит основную БД сервиса (пусто — БД нет).
 svc_dbhost() {
   case "$1" in
-    auth|user|ord|catalog|report|tracking) echo db ;; bff) return 1 ;;
+    auth|user|ord|catalog|report|tracking) echo db ;; bff|envoy) return 1 ;;
   esac
 }
 
@@ -109,6 +163,15 @@ live_port() {
 peer_url() { printf 'http://localhost:%s' "$(live_port "$1")"; }
 
 port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | grep -q .; }
+
+wait_for_listen() { # <port> [сек=20] — дожидается bind (go run компилирует первый бинарь до ~10 с)
+  local port="$1" limit="${2:-20}" i
+  for i in $(seq "$((limit * 10))"); do
+    port_busy "$port" && return 0
+    sleep 0.1
+  done
+  return 1
+}
 
 port_holder() { # <port> → "имя (ветка)" живого экземпляра с этим портом или пусто
   local f n base p srcdir br
@@ -250,6 +313,32 @@ render_env() { # <svc> <src-dir> <env-path-out> <http-port> <db-name> [task 0|1]
   esac
 }
 
+# A1: env разв-экземпляра фиксирует адреса пиров на старте. Смена задачных
+# экземпляров (up/down/close) меняет live_port пира — задетые разв-экземпляры
+# (те, чей env ссылается на изменённый сервис) перерендериваются и рестартуют.
+refresh_dev_peers() { # <svc>... — сервисы, чьи задачные экземпляры сменились
+  [ $# -gt 0 ] || return 0
+  local d c need tmp
+  for d in $KNOWN_SERVICES; do
+    instance_running "$d" || continue
+    [ -f "$(envfile "$d")" ] || continue
+    need=0
+    for c in "$@"; do
+      case " $(svc_peers "$d" 2>/dev/null) " in *" $c "*) need=1; break ;; esac
+    done
+    [ "$need" = "1" ] || continue
+    # Кандидат рендерится тем же render_env: отличается — env устарел.
+    tmp="$(mktemp -t upl-peer.XXXXXX)" || continue
+    ( render_env "$d" "$UPL_HOME/services/$(svc_repo "$d")" "$tmp" "$(svc_port "$d")" "$(svc_dbname "$d")" 0 ) \
+      || { rm -f "$tmp"; continue; }
+    if cmp -s "$tmp" "$(envfile "$d")"; then rm -f "$tmp"; continue; fi
+    rm -f "$tmp"
+    info "$d: адрес пира сменился — перезапускаю с обновлённым env"
+    stop_instance "$d"
+    ( cmd_svc_up "$d" ) || info "$d: не поднялся после перерендера — подними вручную: svc up $d"
+  done
+}
+
 # ── БД ───────────────────────────────────────────────────────────────────────
 
 psql_db() { # <dbhost> <dbname> <sql>
@@ -352,41 +441,11 @@ copy_local_env() { # <repo> <worktree> — локальные (gitignored) .env 
   done
 }
 
-envoy_base_branch() { # базовая ветка репозитория envoy: первая существующая
-  local b repo="$UPL_HOME/services/envoy"
-  for b in master main develop; do
-    git -C "$repo" show-ref --verify -q "refs/heads/$b" && { echo "$b"; return 0; }
-  done
-  for b in master main develop; do
-    git -C "$repo" show-ref --verify -q "refs/remotes/origin/$b" && { echo "$b"; return 0; }
-  done
-  return 1
-}
-
 git_worktree_add_local() { # <repo> <wt> <branch> — создаёт worktree и переносит локальные .env
   ( cd "$1" && git worktree add "$2" "$3" 2>/dev/null ) \
     || ( cd "$1" && git worktree add -b "$2" "$3" "origin/$3" 2>/dev/null ) \
     || return 1
   copy_local_env "$1" "$2"
-}
-
-base_ff_sync() { # <repo> <branch> — догоняет базовую ветку ff-only (fetch + merge --ff-only)
-  # Грязные каталоги и расхождения с origin не трогаются - только сообщение.
-  local name
-  name="$(basename "$1")"
-  git -C "$1" fetch -q origin 2>/dev/null \
-    || { info "switch: $name — fetch не удался, догон пропущен"; return 0; }
-  [ "$(git -C "$1" branch --show-current 2>/dev/null)" = "$2" ] || return 0
-  if [ -n "$(git -C "$1" status --porcelain 2>/dev/null | head -1)" ]; then
-    info "switch: $name — каталог грязный, догон пропущен"; return 0
-  fi
-  if git -C "$1" merge --ff-only "origin/$2" >/dev/null 2>&1; then
-    info "switch: $name — $2 догнан до $(git -C "$1" log -1 --format='%h' origin/$2)"
-  elif [ "$(git -C "$1" rev-parse "$2" 2>/dev/null)" = "$(git -C "$1" rev-parse "origin/$2" 2>/dev/null)" ]; then
-    : # уже актуален
-  else
-    info "switch: $name — $2 расходится с origin, догон пропущен (ручной разбор)"
-  fi
 }
 
 # Есть ли у задачного дерева свои миграции относительно origin/develop; три точки:
@@ -426,6 +485,33 @@ envoy_render_from() { # <src-dir> — config + standalone из чекаута, .
 
 envoy_render_develop() { # рендер конфига envoy из основного чекаута services/envoy
   envoy_render_from "$UPL_HOME/services/envoy"
+}
+
+envoy_render_base() { # базовый конфиг envoy: чекаут на базе — из чекаута, иначе снапшот origin/<base>
+  # Чекаут envoy switch держит только на базовой ветке; origin-снапшот страхует
+  # ручные состояния чекаута вне базы.
+  local repo="$UPL_HOME/services/envoy" base ref tmp
+  base="$(svc_base_branch envoy)" || die "не найдена базовая ветка репозитория envoy"
+  if [ "$(git -C "$repo" branch --show-current 2>/dev/null)" = "$base" ]; then
+    envoy_render_from "$repo"
+    return
+  fi
+  git -C "$repo" fetch -q origin 2>/dev/null || true
+  ref="$base"
+  git -C "$repo" show-ref --verify -q "refs/remotes/origin/$base" && ref="origin/$base"
+  tmp="$UPL_HOME/services/envoy-UPL-0"
+  if [ -d "$tmp" ]; then
+    if ! git -C "$repo" worktree list --porcelain | grep -qF "$(cd "$tmp" 2>/dev/null && pwd -P)"; then
+      [ -d "$tmp/config" ] && die "$tmp — не зарегистрирован как worktree, но содержит config; разберись вручную"
+      mv "$tmp" "$tmp.idea-backup-$(date +%s)"
+      info "envoy — незарегистрированный временный каталог перенесён в сторону"
+    fi
+  fi
+  git_worktree_add_local "$repo" "$tmp" "$ref" \
+    || die "не удалось получить базовый конфиг envoy из '$ref'"
+  envoy_render_from "$tmp"
+  ( cd "$repo" && git worktree remove --force "$tmp" >/dev/null 2>&1 ) || true
+  info "envoy — применён базовый конфиг ($ref)"
 }
 
 envoy_patch_standalone() {
@@ -521,6 +607,35 @@ cmd_infra() {
 
 # ── Команды: svc ─────────────────────────────────────────────────────────────
 
+cmd_svc_up_gateway() { # <svc> [task-key] [branch] — gateway в compose; «код» = отрендеренный конфиг
+  local svc="$1" task_key="$2" branch="$3"
+  docker ps --format '{{.Names}}' | grep -qx db || die "инфраструктура не поднята: upl-infra.sh infra up"
+  local repo src sfx
+  repo="$UPL_HOME/services/$(svc_repo "$svc")"
+  src="$repo"
+  if [ -n "$task_key" ]; then
+    sfx="$(task_suffix "$task_key")"
+    branch="${branch:-feature/UPL-$sfx}"
+    # Чекаут gateway на задачную ветку не ставится: конфиг задачи - из worktree.
+    # Чекаут, вручную оставленный на задачной ветке, используется как есть.
+    if [ "$(git -C "$repo" branch --show-current 2>/dev/null)" = "$branch" ]; then
+      src="$repo"
+    else
+      src="$(worktree_path "$svc" "$sfx")"
+      if [ ! -d "$src" ]; then
+        git_worktree_add_local "$repo" "$src" "$branch" \
+          || die "нет ветки $branch у $(svc_repo "$svc") — создай её или проверь ключ"
+      fi
+    fi
+  fi
+  [ -d "$src/config" ] || die "$src/config не найден — конфиг $svc не из чего рендерить"
+  envoy_render_from "$src"
+  if ! docker ps --format '{{.Names}}' | grep -qx "$svc"; then
+    compose up -d "$svc" || die "$svc не поднялся"
+  fi
+  info "$svc поднят (compose): порт $(svc_port "$svc"), конфиг из $(basename "$src")"
+}
+
 cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   local svc="$1"; shift
   local task_key="" branch="" sfx="" proc="api"
@@ -533,6 +648,11 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
       *) die "svc up: неизвестный флаг $1" ;;
     esac
   done
+  if [ -z "$task_key" ] && [ -n "$sfx" ]; then task_key="UPL-$sfx"; fi
+  if [ "$(svc_kind "$svc")" = "gateway" ]; then
+    cmd_svc_up_gateway "$svc" "$task_key" "$branch"
+    return
+  fi
   command -v go >/dev/null || die "go не найден в PATH (/usr/local/go/bin)"
   docker ps --format '{{.Names}}' | grep -qx db || die "инфраструктура не поднята: upl-infra.sh infra up"
 
@@ -636,9 +756,15 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   nohup bash "$SELF" __supervisor "$name" "$src" "$(envfile "$name")" "$proc" >/dev/null 2>&1 &
   disown 2>/dev/null
   sleep 1 # супервизор успел записать свой pid в pidfile
+  # A4: «поднят» честно - после bind порта, а не после факта старта go run.
+  if [ "$proc" = "api" ]; then
+    wait_for_listen "$port" 20 \
+      || info "предупреждение: $name не слушает порт $port за 20 с — go run ещё компилирует или упал; лог: $(logfile "$name")"
+  fi
   if docker ps --format '{{.Names}}' | grep -qx envoy; then
     envoy_rewrite_backends_live # живые инстансы поменялись — file provider перечитает
   fi
+  [ "$inst_task" = "1" ] && refresh_dev_peers "$svc" # A1: зависимые разв-экземпляры на новый адрес пира
   info "$name поднят: порт $port${dbname:+, БД $dbname}, лог $(logfile "$name")"
 }
 
@@ -652,17 +778,27 @@ cmd_svc_down() {
       *) shift ;;
     esac
   done
+  if [ "$(svc_kind "$svc")" = "gateway" ]; then
+    if docker ps --format '{{.Names}}' | grep -qx "$svc"; then
+      compose stop "$svc" >/dev/null || die "$svc (compose) не остановился"
+      info "$svc остановлен (compose)"
+    else
+      info "$svc не запущен (compose)"
+    fi
+    return
+  fi
   local name="$svc"; [ -n "$sfx" ] && name="$svc-$sfx"
   stop_instance "$name"
   if docker ps --format '{{.Names}}' | grep -qx envoy; then
     envoy_rewrite_backends_live
   fi
+  [ -n "$sfx" ] && refresh_dev_peers "$svc" # A1: пиры возвращаются на develop-адрес
   info "$name остановлен"
 }
 
 cmd_svc_up_all() { # разв-экземпляры всех сервисов; отказ одного не мешает остальным
   local failed="" svc
-  for svc in $KNOWN_SERVICES; do
+  for svc in $ALL_SERVICES; do
     ( cmd_svc_up "$svc" ) || failed="$failed $svc"
   done
   [ -z "$failed" ] || die "не поднялись:$failed — причины выше; остальные экземпляры работают"
@@ -671,7 +807,7 @@ cmd_svc_up_all() { # разв-экземпляры всех сервисов; о
 cmd_svc_up_branch() { # <branch> — задачные экземпляры ветки для всех сервисов, где она есть
   local branch="$1" svc repo failed=""
   [ -n "$(task_suffix "$branch")" ] || die "svc up: '$branch' — не задачная ветка (feature/UPL-N)"
-  for svc in $KNOWN_SERVICES; do
+  for svc in $ALL_SERVICES; do
     repo="$UPL_HOME/services/$(svc_repo "$svc")"
     if [ ! -d "$repo" ]; then
       info "svc up: $svc — чекаута нет ($repo), пропущен"; failed="$failed $svc"; continue
@@ -690,7 +826,15 @@ cmd_svc_up_branch() { # <branch> — задачные экземпляры ве�
 
 cmd_svc_down_all() { # гасит develop-экземпляры всех сервисов; задачные экземпляры не трогает
   local svc any=0
-  for svc in $KNOWN_SERVICES; do
+  for svc in $ALL_SERVICES; do
+    if [ "$(svc_kind "$svc")" = "gateway" ]; then
+      if docker ps --format '{{.Names}}' | grep -qx "$svc"; then
+        compose stop "$svc" >/dev/null || die "$svc (compose) не остановился"
+        info "$svc остановлен (compose)"
+        any=1
+      fi
+      continue
+    fi
     if instance_running "$svc"; then
       stop_instance "$svc"
       info "$svc остановлен"
@@ -707,7 +851,7 @@ cmd_svc_down_all() { # гасит develop-экземпляры всех серв
   fi
 }
 
-cmd_svc_switch() { # [<branch>] [--fetch] — переключить основные чекауты; без аргумента — все на develop
+cmd_svc_switch() { # [<branch>] [--fetch] — переключить основные чекауты; без аргумента — базовые ветки
   local target="" do_fetch="" pos=0
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -719,9 +863,10 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
   done
   [ "$pos" -le 1 ] || die "svc switch: максимум одна ветка"
   [ -n "$target" ] || target="develop"
-  local svc repo cur tgt out failed=""
-  for svc in $KNOWN_SERVICES; do
+  local svc repo cur tgt out failed="" kind base isbase
+  for svc in $ALL_SERVICES; do
     repo="$UPL_HOME/services/$(svc_repo "$svc")"
+    kind="$(svc_kind "$svc")"
     if [ ! -d "$repo" ]; then
       info "svc switch: $svc — чекаута нет ($repo), пропущен"; failed="$failed $svc"; continue
     fi
@@ -729,14 +874,35 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
       git -C "$repo" fetch --quiet origin 2>/dev/null \
         || info "svc switch: $svc — fetch не удался, ищу ветку по локальным ссылкам"
     fi
-    tgt="$target"
-    if [ "$tgt" != "develop" ] \
-      && ! git -C "$repo" show-ref --verify -q "refs/heads/$tgt" \
-      && ! git -C "$repo" show-ref -q --verify "refs/remotes/origin/$tgt"; then
-      info "svc switch: $svc — ветки '$target' нет, цель develop"; tgt="develop"
+    # develop|master|main — запрос основной ветки репозитория. Основная ветка
+    # одна: develop, если есть, иначе канон (первая существующая из master/main).
+    # Правило простое и считается на каждом запуске (stateless).
+    base="$(svc_base_branch "$svc" 2>/dev/null || true)"
+    isbase=0
+    case "$target" in
+      develop|master|main)
+        isbase=1
+        if [ -n "$base" ]; then
+          tgt="$base"
+          [ "$tgt" != "$target" ] && info "svc switch: $svc — основная ветка $tgt ('$target' не используется)"
+        else
+          info "svc switch: $svc — нет ни develop, ни master/main ($(svc_base_branches "$svc"))"
+          failed="$failed $svc"; continue
+        fi ;;
+      *)
+        tgt="$target"
+        if ! git -C "$repo" show-ref --verify -q "refs/heads/$tgt" \
+          && ! git -C "$repo" show-ref -q --verify "refs/remotes/origin/$tgt"; then
+          info "svc switch: $svc — ветки '$target' нет, цель ${base:-develop}"
+          tgt="${base:-develop}"
+          isbase=1
+        fi ;;
+    esac
+    # Чекаут gateway держится только на базовой ветке; задачный конфиг - из worktree.
+    if [ "$kind" = "gateway" ] && [ "$isbase" = "0" ]; then
+      gateway_render_task "$svc" "$repo" "$tgt"
+      continue
     fi
-    local isbase=0
-    case "$tgt" in develop|master|main) isbase=1 ;; esac
     if [ "$isbase" = "1" ]; then
       git -C "$repo" fetch -q origin 2>/dev/null || true
     fi
@@ -759,12 +925,16 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
           info "svc switch: $svc — $tgt расходится с origin, догон пропущен"
         fi
       fi
-      if [ "$moved" = "1" ] && instance_running "$svc"; then
+      if [ "$moved" = "1" ] && [ "$kind" = "go" ] && instance_running "$svc"; then
         stop_instance "$svc"
         docker ps --format '{{.Names}}' | grep -qx envoy && envoy_rewrite_backends_live
         info "svc switch: $svc — экземпляр остановлен для обновления кода (подними: svc up $svc)"
       elif [ "$moved" = "0" ]; then
         info "svc switch: $svc уже на '$tgt'"
+      fi
+      if [ "$kind" = "gateway" ]; then
+        envoy_render_from "$repo"
+        info "switch: $svc — применён конфиг из чекаута ('$tgt')"
       fi
       continue
     fi
@@ -775,7 +945,7 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
     # Останавливаем ДО switch: смена кода каталога под работающим экземпляром
     # оставила бы его на старом бинаре (автоцикла нет).
     local stopped=""
-    if instance_running "$svc"; then
+    if [ "$kind" = "go" ] && instance_running "$svc"; then
       stop_instance "$svc"
       if docker ps --format '{{.Names}}' | grep -qx envoy; then envoy_rewrite_backends_live; fi
       stopped=1
@@ -792,75 +962,64 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
       info "svc switch: $svc — $tgt догнан до $(git -C "$repo" log -1 --format=%h)"
     fi
     info "svc switch: $svc → '$tgt'"
+    if [ "$kind" = "gateway" ]; then
+      envoy_render_from "$repo"
+      info "switch: $svc — применён конфиг из чекаута ('$tgt')"
+    fi
   done
-  # envoy: на задачную ветку применяется конфиг из её worktree или из чекаута,
-  # стоящего на этой ветке; неудача останавливает switch, а не тихо берёт develop.
-  # При возврате на develop восстанавливается develop-конфиг.
-  local applied="" esfx esrc="$UPL_HOME/services/envoy" ewt="$UPL_HOME/services/envoy-UPL-0" ebak ebr
-  if [[ "$target" =~ ^[Ff]eature/[Uu][Pp][Ll]-([0-9]+)$ ]] \
-    && { git -C "$esrc" show-ref --verify -q "refs/heads/$target" \
-      || git -C "$esrc" show-ref --verify -q "refs/remotes/origin/$target"; }; then
-    esfx="${BASH_REMATCH[1]}"
-    ewt="$UPL_HOME/services/envoy-UPL-$esfx"
-    if [ "$(git -C "$esrc" branch --show-current 2>/dev/null)" = "$target" ]; then
-      applied="$esrc"
-      info "switch: envoy — чекаут уже на '$target', конфиг применён из чекаута"
-    else
-      if [ -d "$ewt" ]; then
-        local ewtres
-        ewtres="$(cd "$ewt" 2>/dev/null && pwd -P)"
-        if ! git -C "$esrc" worktree list --porcelain | grep -qF "worktree $ewtres"; then
-          if [ -d "$ewt/config" ]; then
-            die "switch: $ewt — не зарегистрирован как worktree, но содержит config; разберись вручную"
-          fi
-          ebak="$ewt.idea-backup-$(date +%s)"
-          mv "$ewt" "$ebak"
-          info "switch: envoy — незарегистрированный каталог перенесён в $(basename "$ebak")"
-        fi
-      fi
-      if [ -d "$ewt" ]; then
-        ebr="$(git -C "$ewt" branch --show-current 2>/dev/null)"
-        [ "$ebr" = "$target" ] || die "switch: $ewt — на ветке '$ebr', а требуется '$target'; разберись вручную"
-        applied="$ewt"
-      else
-        git_worktree_add_local "$esrc" "$ewt" "$target" \
-          || die "switch: не удалось создать worktree envoy для '$target'"
-        applied="$ewt"
-      fi
-      info "switch: envoy — конфиг применён из worktree задачи"
-    fi
-    envoy_render_from "$applied"
-  elif [ "$target" = "develop" ]; then
-    # Сервисы уже догнаны ff-only в основном цикле; envoy-репо догоняем здесь.
-    base_ff_sync "$esrc" "$(envoy_base_branch 2>/dev/null || echo master)"
-    # Основной чекаут envoy может стоять на задачной ветке (вне KNOWN_SERVICES
-    # switch его не переключает) - базовый конфиг берём из базовой ветки репозитория.
-    local ebase
-    if ebase="$(envoy_base_branch)" && [ "$(git -C "$esrc" branch --show-current 2>/dev/null)" = "$ebase" ]; then
-      envoy_render_from "$esrc"
-    else
-      [ -n "$ebase" ] || die "switch: не найдена базовая ветка репозитория envoy"
-      # base_ff_sync выше рано вернулся (чекаут на задаче) - догоняем base
-      # из origin: локальный снапшот базовой ветки мог устареть.
-      git -C "$esrc" fetch -q origin 2>/dev/null || true
-      local eclone="$ebase"
-      git -C "$esrc" show-ref --verify -q "refs/remotes/origin/$ebase" && eclone="origin/$ebase"
-      local etmp="$UPL_HOME/services/envoy-UPL-0"
-      git_worktree_add_local "$esrc" "$etmp" "$eclone" \
-        || die "switch: не удалось получить базовый конфиг envoy из '$eclone'"
-      envoy_render_from "$etmp"
-      ( cd "$esrc" && git worktree remove --force "$etmp" >/dev/null 2>&1 ) || true
-      info "switch: envoy — применён develop-конфиг (база: $eclone)"
-    fi
-    info "switch: envoy — применён develop-конфиг"
-  fi
   [ -z "$failed" ] || die "не переключены:$failed — причины выше; остальные переключены"
 }
 
+gateway_render_task() { # <svc> <repo> <task-branch> — конфиг задачи из worktree; чекаут не переключается
+  local svc="$1" repo="$2" tgt="$3" sfx ewt ebr want got ewtres ebak
+  sfx="$(task_suffix "$tgt")"
+  ewt="$UPL_HOME/services/$(svc_repo "$svc")-UPL-$sfx"
+  if [ "$(git -C "$repo" branch --show-current 2>/dev/null)" = "$tgt" ]; then
+    envoy_render_from "$repo"
+    info "switch: $svc — чекаут уже на '$tgt' (ручное состояние), конфиг применён из чекаута"
+    return
+  fi
+  if [ -d "$ewt" ]; then
+    ewtres="$(cd "$ewt" 2>/dev/null && pwd -P)"
+    if ! git -C "$repo" worktree list --porcelain | grep -qF "worktree $ewtres"; then
+      if [ -d "$ewt/config" ]; then
+        die "switch: $ewt — не зарегистрирован как worktree, но содержит config; разберись вручную"
+      fi
+      ebak="$ewt.idea-backup-$(date +%s)"
+      mv "$ewt" "$ebak"
+      info "switch: $svc — незарегистрированный каталог перенесён в $(basename "$ebak")"
+    fi
+  fi
+  if [ -d "$ewt" ]; then
+    ebr="$(git -C "$ewt" branch --show-current 2>/dev/null)"
+    if [ -n "$ebr" ] && [ "$ebr" != "$tgt" ]; then
+      die "switch: $ewt — на ветке '$ebr', а требуется '$tgt'; разберись вручную"
+    fi
+    if [ -z "$ebr" ]; then
+      # detached-worktree из origin: сличаем HEAD с требуемой веткой
+      want="$(git -C "$repo" rev-parse --verify -q "refs/heads/$tgt" || git -C "$repo" rev-parse --verify -q "refs/remotes/origin/$tgt")"
+      got="$(git -C "$ewt" rev-parse HEAD 2>/dev/null)"
+      [ "$want" = "$got" ] || die "switch: $ewt — detached не на '$tgt'; разберись вручную"
+    fi
+  else
+    git_worktree_add_local "$repo" "$ewt" "$tgt" \
+      || die "switch: не удалось создать worktree $svc для '$tgt'"
+  fi
+  envoy_render_from "$ewt"
+  info "switch: $svc — конфиг применён из worktree задачи"
+}
+
 cmd_svc_status() {
-  local svc line inst pid child port
+  local svc line inst pid child port gbranch gstate
   printf '%-24s %-6s %-8s %-18s %s\n' "INSTANCE" "PORT" "PID" "BRANCH" "STATE"
-  for svc in $KNOWN_SERVICES; do
+  for svc in $ALL_SERVICES; do
+    if [ "$(svc_kind "$svc")" = "gateway" ]; then
+      gbranch="$(git -C "$UPL_HOME/services/$(svc_repo "$svc")" branch --show-current 2>/dev/null || true)"
+      [ -n "$gbranch" ] || gbranch="(detached)"
+      gstate="остановлен"; docker ps --format '{{.Names}}' | grep -qx "$svc" && gstate="запущен (compose)"
+      printf '%-24s %-6s %-8s %-18s %s\n' "$svc" "$(svc_port "$svc")" "-" "$gbranch" "$gstate"
+      continue
+    fi
     for inst in $(instance_names "$svc"); do
       local base srcdir branch; base="$(svc_port "$svc")"
       port="$base"; case "$inst" in "$svc"-*) port=$((9000 + base - 8000));; esac
@@ -887,6 +1046,10 @@ cmd_svc_status() {
 cmd_svc_logs() {
   local svc="$1"; shift; local sfx=""
   while [ $# -gt 0 ]; do case "$1" in --task) sfx="$(task_suffix "$2")"; shift 2;; *) shift;; esac; done
+  if [ "$(svc_kind "$svc")" = "gateway" ]; then
+    docker logs --tail 200 -f "$svc"
+    return
+  fi
   local name="$svc"; [ -n "$sfx" ] && name="$svc-$sfx"
   tail -n 200 -f "$(logfile "$name")"
 }
@@ -925,12 +1088,6 @@ cmd_svc_migrate() { # <svc> up|down [--task ...]
 }
 
 # ── Envoy под задачу / приёмка ───────────────────────────────────────────────
-
-envoy_render_for_task() { # <sfx|''> — конфиг из worktree задачи envoy, если есть
-  local sfx="$1" src="$UPL_HOME/services/envoy"
-  [ -n "$sfx" ] && [ -d "$UPL_HOME/services/envoy-UPL-$sfx/config" ] && src="$UPL_HOME/services/envoy-UPL-$sfx"
-  envoy_render_from "$src"
-}
 
 envoy_rewrite_backends_live() { # pairs backend=порт: задача приоритетна, иначе живой develop
   local svc name port
@@ -997,7 +1154,7 @@ cmd_accept() { # <UPL-XXXX>
   cmd_infra up
 
   local svc wt affected=""
-  for svc in $KNOWN_SERVICES; do
+  for svc in $ALL_SERVICES; do
     wt="$(worktree_path "$svc" "$sfx")"
     if [ -d "$wt" ] || instance_running "$svc-$sfx"; then
       affected="$affected $svc"
@@ -1007,15 +1164,15 @@ cmd_accept() { # <UPL-XXXX>
 
   for svc in $affected; do
     # Автоцикла нет: поднятый экземпляр задачи гасим, чтобы accept поднял актуальный код.
+    # gateway: экземпляра на хосте нет, cmd_svc_up сам рендерит конфиг и держит контейнер.
     instance_running "$svc-$sfx" && stop_instance "$svc-$sfx"
     cmd_svc_up "$svc" --task "$key"
   done
-
-  envoy_render_for_task "$sfx"
-  if ! docker ps --format '{{.Names}}' | grep -qx envoy; then
-    compose up -d envoy || die "envoy не поднялся"
-  fi
-  sleep 2 # file provider подхватывает конфиг
+  case " $affected " in
+    *" envoy "*) ;; # конфиг задачи уже отрендерен cmd_svc_up envoy
+    *) envoy_render_base ;;
+  esac
+  docker ps --format '{{.Names}}' | grep -qx envoy && sleep 2 # file provider подхватывает конфиг
 
   # bff-блок задачи обязан иметь правила в отрендеренных маршрутах envoy:
   # отсутствие правила иначе ловится только этим прогоном (environment.md).
@@ -1081,6 +1238,10 @@ PY
   info "Приёмка $key — envoy: http://localhost:8110"
   local svc port methods res
   for svc in $affected; do
+    if [ "$(svc_kind "$svc")" = "gateway" ]; then
+      info "• $svc: конфиг задачи применён (gateway http://localhost:$(svc_port "$svc"))"
+      continue
+    fi
     port="$(instance_task_port "$svc")"
     [ -n "$port" ] || port="$(svc_port "$svc")"
     res="$(changed_methods_diff "$svc" "$(worktree_path "$svc" "$sfx")")"
@@ -1093,9 +1254,6 @@ PY
         info "• $svc: http://localhost:$port/swagger/index.html - изменённые: $methods" ;;
     esac
   done
-  if [ -n "${aggmiss:-}" ]; then
-    die "accept: нет envoy-правил для агрегированных endpoints задачи:$aggmiss — добавь правило в routes.yaml envoy и повтори accept"
-  fi
 }
 
 # ── task close ───────────────────────────────────────────────────────────────
@@ -1104,11 +1262,12 @@ cmd_task_close() { # <UPL-XXXX>
   local key="$1"; [ -n "${key:-}" ] || die "task close: укажи ключ задачи"
   local sfx; sfx="$(task_suffix "$key")"; [ -n "$sfx" ] || die "task close: не распознал суффикс в '$key'"
 
-  local svc wt repo dbname dbh
-  for svc in $KNOWN_SERVICES; do
+  local svc wt repo dbname dbh touched=""
+  for svc in $ALL_SERVICES; do
     wt="$(worktree_path "$svc" "$sfx")"
     repo="$UPL_HOME/services/$(svc_repo "$svc")"
     [ -d "$wt" ] || [ -e "$(pidfile "$svc-$sfx")" ] || continue
+    touched="$touched $svc"
     dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
     dbname="$(svc_dbname "$svc")_$sfx"
 
@@ -1157,7 +1316,8 @@ cmd_task_close() { # <UPL-XXXX>
     fi
   done
 
-  envoy_render_for_task ""
+  refresh_dev_peers $touched # A1: задачные экземпляры сняты — пиры на develop-адреса
+  envoy_render_base
   docker ps --format '{{.Names}}' | grep -qx envoy && sleep 2
   info "задача $key закрыта"
 }
