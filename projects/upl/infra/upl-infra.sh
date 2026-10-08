@@ -840,12 +840,17 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
       envoy_render_from "$esrc"
     else
       [ -n "$ebase" ] || die "switch: не найдена базовая ветка репозитория envoy"
+      # base_ff_sync выше рано вернулся (чекаут на задаче) - догоняем base
+      # из origin: локальный снапшот базовой ветки мог устареть.
+      git -C "$esrc" fetch -q origin 2>/dev/null || true
+      local eclone="$ebase"
+      git -C "$esrc" show-ref --verify -q "refs/remotes/origin/$ebase" && eclone="origin/$ebase"
       local etmp="$UPL_HOME/services/envoy-UPL-0"
-      git_worktree_add_local "$esrc" "$etmp" "$ebase" \
-        || die "switch: не удалось получить базовый конфиг envoy из '$ebase'"
+      git_worktree_add_local "$esrc" "$etmp" "$eclone" \
+        || die "switch: не удалось получить базовый конфиг envoy из '$eclone'"
       envoy_render_from "$etmp"
       ( cd "$esrc" && git worktree remove --force "$etmp" >/dev/null 2>&1 ) || true
-      info "switch: envoy — базовый конфиг взят из '$ebase' (чекаут на '$(git -C "$esrc" branch --show-current 2>/dev/null)')"
+      info "switch: envoy — применён develop-конфиг (база: $eclone)"
     fi
     info "switch: envoy — применён develop-конфиг"
   fi
