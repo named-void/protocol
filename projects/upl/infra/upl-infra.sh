@@ -23,8 +23,8 @@
 #                       есть — на неё, у кого нет — на develop (без аргумента —
 #                       все на develop); поднятые develop-экземпляры переключённых
 #                       сервисов останавливаются; --fetch обновляет origin заранее
-#   svc up <branch> | svc up --task UPL-XXXX — задачные экземпляры ветки сразу для
-#                       всех сервисов, где она есть (чекаут или worktree)
+#   svc up --task UPL-XXXX — задачные экземпляры ветки сразу для всех сервисов,
+#                       где она есть (чекаут или worktree)
 #   seed catalog
 #   accept <UPL-XXXX>
 #   task close <UPL-XXXX>
@@ -486,16 +486,18 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     inst_task=1
     inst_local=1
   fi
-  # Явный --task на ветке, занятой самим чекаутом: worktree невозможен,
-  # экземпляр поднимается из чекаута (тот же код).
-  if [ -n "$sfx" ] && [ "$(task_suffix "$cur" 2>/dev/null)" = "$sfx" ]; then
-    inst_local=1
-  fi
   if [ -n "${task_key:-}${sfx:-}" ]; then
     [ -z "$sfx" ] && sfx="$(task_suffix "$task_key")"
     [ -n "$sfx" ] || die "svc up: не распознал суффикс задачи"
     [ -n "$branch" ] || branch="feature/UPL-$sfx"
     inst_task=1
+  fi
+  # Запрошенная ветка совпадает с чекаутом (регистр различается на APFS-алиасах
+  # refs): worktree невозможен, экземпляр поднимается из самого чекаута.
+  if [ "$inst_task" = "1" ] && [ "$inst_local" = "0" ] \
+    && [ "$(printf '%s' "$branch" | tr '[:upper:]' '[:lower:]')" \
+      = "$(printf '%s' "$cur" | tr '[:upper:]' '[:lower:]')" ]; then
+    inst_local=1
   fi
   if [ "$inst_task" = "1" ]; then
     name="$svc-$sfx"
@@ -1237,7 +1239,7 @@ case "${1:-}" in
                 t="${1:-}"; [ -n "$t" ] || die "svc up: --task требует ключ, например UPL-1226"
                 cmd_svc_up_branch "feature/UPL-$(task_suffix "$t")"
               elif svc_repo "$s" >/dev/null 2>&1; then cmd_svc_up "$s" "$@"
-              else cmd_svc_up_branch "$s"; fi ;;
+              else die "svc up: неизвестный сервис '$s' (задачную ветку на все сервисы: svc up --task UPL-XXXX)"; fi ;;
           down) if [ -z "$s" ]; then cmd_svc_down_all; else cmd_svc_down "$s" "$@"; fi ;;
           logs) cmd_svc_logs "$s" "$@" ;;
           migrate) cmd_svc_migrate "$s" "$@" ;;
