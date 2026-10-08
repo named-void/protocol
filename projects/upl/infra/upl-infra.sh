@@ -196,7 +196,14 @@ render_env() { # <svc> <src-dir> <env-path-out> <http-port> <db-name> [task 0|1]
   # src локален обязательно: без local динамический скоупинг Bash перезапишет
   # src вызывающего cmd_svc_up путём до .env.example (регрессия 9997).
   local src dbh dbport
-  src="$src_dir/configs/.env.example"
+  # База - локальный configs/.env сервиса (реальные креды/ключи разработки);
+  # инфраструктурные ключи (HTTP_PORT, DB_*, REDIS_*, ...) перезаписываются ниже.
+  # Симлинк (auth: configs/.env → instance-env) локальным файлом не считается -
+  # берём шаблон. Шаблон .env.example - fallback, когда локального .env нет.
+  src="$src_dir/configs/.env"
+  if [ ! -f "$src" ] || [ -L "$src" ]; then
+    src="$src_dir/configs/.env.example"
+  fi
   [ -f "$src" ] || die "$src не найден"
   cp "$src" "$out"
   dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
@@ -330,6 +337,18 @@ task_suffix() { # ключ/ветка → числовой суффикс
 
 worktree_path() { # <svc> <sfx> → каталог worktree
   printf '%s/services/%s-UPL-%s' "$UPL_HOME" "$(svc_repo "$1")" "$2"
+}
+
+copy_local_env() { # <repo> <worktree> — локальные (gitignored) .env рядом с .env.example
+  # Пути .env.example берём из worktree (его ветка может отличаться от чекаута),
+  # сами .env - из чекаута: untracked-файлы git при создании worktree не переносит.
+  local rel
+  git -C "$2" ls-files | grep -E '(^|/)\.env\.example$' | while IFS= read -r rel; do
+    if [ -f "$1/${rel%.env.example}.env" ]; then
+      mkdir -p "$2/$(dirname "$rel")"
+      cp "$1/${rel%.env.example}.env" "$2/${rel%.env.example}.env"
+    fi
+  done
 }
 
 # Есть ли у задачного дерева свои миграции относительно origin/develop; три точки:
@@ -538,6 +557,7 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
         ( cd "$repo" && git worktree add "$src" "$branch" 2>/dev/null ) \
           || ( cd "$repo" && git worktree add -b "$branch" "$src" "origin/$branch" 2>/dev/null ) \
           || die "нет ветки $branch у $(svc_repo "$svc") — создай её или проверь ключ"
+        copy_local_env "$repo" "$src"
       fi
     fi
     local dbh; dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
@@ -1043,6 +1063,7 @@ dev_migrate() { # шаг 2: миграции сервиса из origin/develop 
   mkdir -p "$DEV_MIGRATE_DIR"
   [ -d "$wt" ] || git -C "$repo" worktree add --detach "$wt" origin/develop >/dev/null \
     || die "worktree миграций для $(svc_repo "$svc") не создан"
+  copy_local_env "$repo" "$wt" # все создаваемые worktree получают локальные .env
   local envf="$DEV_MIGRATE_DIR/$svc.env"
   cp "$wt/configs/.env.example" "$envf"
   env_set "$envf" DB_HOST localhost
