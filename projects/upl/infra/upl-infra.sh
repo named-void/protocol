@@ -370,6 +370,25 @@ git_worktree_add_local() { # <repo> <wt> <branch> — создаёт worktree и
   copy_local_env "$1" "$2"
 }
 
+base_ff_sync() { # <repo> <branch> — догоняет базовую ветку ff-only (fetch + merge --ff-only)
+  # Грязные каталоги и расхождения с origin не трогаются - только сообщение.
+  local name
+  name="$(basename "$1")"
+  git -C "$1" fetch -q origin 2>/dev/null \
+    || { info "switch: $name — fetch не удался, догон пропущен"; return 0; }
+  [ "$(git -C "$1" branch --show-current 2>/dev/null)" = "$2" ] || return 0
+  if [ -n "$(git -C "$1" status --porcelain 2>/dev/null | head -1)" ]; then
+    info "switch: $name — каталог грязный, догон пропущен"; return 0
+  fi
+  if git -C "$1" merge --ff-only "origin/$2" >/dev/null 2>&1; then
+    info "switch: $name — $2 догнан до $(git -C "$1" log -1 --format='%h' origin/$2)"
+  elif [ "$(git -C "$1" rev-parse "$2" 2>/dev/null)" = "$(git -C "$1" rev-parse "origin/$2" 2>/dev/null)" ]; then
+    : # уже актуален
+  else
+    info "switch: $name — $2 расходится с origin, догон пропущен (ручной разбор)"
+  fi
+}
+
 # Есть ли у задачного дерева свои миграции относительно origin/develop; три точки:
 # миграции, приехавшие ребейзом из develop, своими не считаются.
 task_has_migrations() { # <worktree>
@@ -716,15 +735,45 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
       && ! git -C "$repo" show-ref -q --verify "refs/remotes/origin/$tgt"; then
       info "svc switch: $svc — ветки '$target' нет, цель develop"; tgt="develop"
     fi
+    local isbase=0
+    case "$tgt" in develop|master|main) isbase=1 ;; esac
+    if [ "$isbase" = "1" ]; then
+      git -C "$repo" fetch -q origin 2>/dev/null || true
+    fi
     cur="$(git -C "$repo" branch --show-current)"
-    if [ "$cur" = "$tgt" ]; then info "svc switch: $svc уже на '$tgt'"; continue; fi
+    if [ "$cur" = "$tgt" ]; then
+      # Уже на цели: базовую ветку догоняем ff-only; экземпляр останавливаем
+      # только при реальной смене HEAD (иначе гонял бы старый бинарь).
+      local moved=0 sha0 sha1
+      if [ "$isbase" = "1" ] && [ -z "$(git -C "$repo" status --porcelain)" ]; then
+        sha0="$(git -C "$repo" rev-parse "$tgt" 2>/dev/null)"
+        if git -C "$repo" merge --ff-only "origin/$tgt" >/dev/null 2>&1; then
+          sha1="$(git -C "$repo" rev-parse "$tgt" 2>/dev/null)"
+          if [ "$sha0" != "$sha1" ]; then
+            moved=1
+            info "svc switch: $svc — $tgt догнан до $(git -C "$repo" log -1 --format=%h)"
+          fi
+        elif [ "$sha0" = "$(git -C "$repo" rev-parse "origin/$tgt" 2>/dev/null)" ]; then
+          : # уже актуален
+        else
+          info "svc switch: $svc — $tgt расходится с origin, догон пропущен"
+        fi
+      fi
+      if [ "$moved" = "1" ] && instance_running "$svc"; then
+        stop_instance "$svc"
+        docker ps --format '{{.Names}}' | grep -qx envoy && envoy_rewrite_backends_live
+        info "svc switch: $svc — экземпляр остановлен для обновления кода (подними: svc up $svc)"
+      elif [ "$moved" = "0" ]; then
+        info "svc switch: $svc уже на '$tgt'"
+      fi
+      continue
+    fi
     if [ -n "$(git -C "$repo" status --porcelain)" ]; then
       info "svc switch: $svc — каталог не чист, не переключён (разберись вручную)"
       failed="$failed $svc"; continue
     fi
-    # Останавливаем ДО switch: супервизор рестартует по checksum исходников каждые
-    # 5 с — после смены ветки поднял бы новый код на общей БД без проверки ветки
-    # и миграций (они только при svc up).
+    # Останавливаем ДО switch: смена кода каталога под работающим экземпляром
+    # оставила бы его на старом бинаре (автоцикла нет).
     local stopped=""
     if instance_running "$svc"; then
       stop_instance "$svc"
@@ -737,6 +786,10 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
       printf '%s\n' "$out" | sed 's/^/    /'
       [ -n "$stopped" ] && info "svc switch: $svc — экземпляр остался остановлен; после разбора: svc up $svc"
       failed="$failed $svc"; continue
+    fi
+    # После switch на базовую ветку сразу догоняем её до origin.
+    if [ "$isbase" = "1" ] && git -C "$repo" merge --ff-only "origin/$tgt" >/dev/null 2>&1; then
+      info "svc switch: $svc — $tgt догнан до $(git -C "$repo" log -1 --format=%h)"
     fi
     info "svc switch: $svc → '$tgt'"
   done
@@ -778,6 +831,8 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
     fi
     envoy_render_from "$applied"
   elif [ "$target" = "develop" ]; then
+    # Сервисы уже догнаны ff-only в основном цикле; envoy-репо догоняем здесь.
+    base_ff_sync "$esrc" "$(envoy_base_branch 2>/dev/null || echo master)"
     # Основной чекаут envoy может стоять на задачной ветке (вне KNOWN_SERVICES
     # switch его не переключает) - базовый конфиг берём из базовой ветки репозитория.
     local ebase
