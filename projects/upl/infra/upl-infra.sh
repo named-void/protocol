@@ -18,6 +18,9 @@
 #                       down гасит их; задачные экземпляры не затрагиваются
 #   svc up|down|logs|status <svc> [--task UPL-XXXX | --branch <b> --suffix <N>] [--proc api|worker|consumer|poller]
 #   svc migrate <svc> [--task ...] up|down
+#   svc switch [<branch>] — переключить основные чекауты: у кого ветка есть — на неё,
+#                       у кого нет — на develop (без аргумента все — на develop);
+#                       поднятые develop-экземпляры переключённых сервисов останавливаются
 #   seed catalog
 #   accept <UPL-XXXX>
 #   task close <UPL-XXXX>
@@ -520,6 +523,48 @@ cmd_svc_down_all() { # гасит develop-экземпляры всех серв
   if [ "$any" = "0" ]; then
     info "запущенных develop-экземпляров нет"
   fi
+}
+
+cmd_svc_switch() { # [<branch>] — переключить основные чекауты; без аргумента — все на develop
+  [ $# -le 1 ] || die "svc switch: максимум один аргумент — имя ветки"
+  local target="${1:-develop}"
+  local svc repo cur tgt out failed=""
+  for svc in $KNOWN_SERVICES; do
+    repo="$UPL_HOME/services/$(svc_repo "$svc")"
+    if [ ! -d "$repo" ]; then
+      info "svc switch: $svc — чекаута нет ($repo), пропущен"; failed="$failed $svc"; continue
+    fi
+    tgt="$target"
+    if [ "$tgt" != "develop" ] \
+      && ! git -C "$repo" show-ref --verify -q "refs/heads/$tgt" \
+      && ! git -C "$repo" show-ref -q --verify "refs/remotes/origin/$tgt"; then
+      info "svc switch: $svc — ветки '$target' нет, цель develop"; tgt="develop"
+    fi
+    cur="$(git -C "$repo" branch --show-current)"
+    if [ "$cur" = "$tgt" ]; then info "svc switch: $svc уже на '$tgt'"; continue; fi
+    if [ -n "$(git -C "$repo" status --porcelain)" ]; then
+      info "svc switch: $svc — каталог не чист, не переключён (разберись вручную)"
+      failed="$failed $svc"; continue
+    fi
+    # Останавливаем ДО switch: супервизор рестартует по checksum исходников каждые
+    # 5 с — после смены ветки поднял бы новый код на общей БД без проверки ветки
+    # и миграций (они только при svc up).
+    local stopped=""
+    if instance_running "$svc"; then
+      stop_instance "$svc"
+      if docker ps --format '{{.Names}}' | grep -qx envoy; then envoy_rewrite_backends_live; fi
+      stopped=1
+      info "svc switch: $svc — экземпляр остановлен перед switch"
+    fi
+    if ! out="$(git -C "$repo" switch "$tgt" 2>&1)"; then
+      info "svc switch: $svc — git switch '$tgt' отклонил:"
+      printf '%s\n' "$out" | sed 's/^/    /'
+      [ -n "$stopped" ] && info "svc switch: $svc — экземпляр остался остановлен; после разбора: svc up $svc"
+      failed="$failed $svc"; continue
+    fi
+    info "svc switch: $svc → '$tgt'"
+  done
+  [ -z "$failed" ] || die "не переключены:$failed — причины выше; остальные переключены"
 }
 
 cmd_svc_status() {
@@ -1051,6 +1096,7 @@ case "${1:-}" in
           migrate) cmd_svc_migrate "$s" "$@" ;;
         esac ;;
       status) cmd_svc_status ;;
+      switch) cmd_svc_switch "$@" ;;
       *) die "svc: неизвестное действие '$action'" ;;
     esac ;;
   seed) shift; cmd_seed "$@" ;;
