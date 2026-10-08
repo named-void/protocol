@@ -23,7 +23,7 @@
 #                       есть — на неё, у кого нет — на develop (без аргумента —
 #                       все на develop); поднятые develop-экземпляры переключённых
 #                       сервисов останавливаются; --fetch обновляет origin заранее;
-#                       envoy: конфиг из worktree задачи, на develop — develop-конфиг
+#                       envoy: конфиг из worktree задачи; на develop — develop-конфиг
 #   svc up --task UPL-XXXX — задачные экземпляры ветки сразу для всех сервисов,
 #                       где она есть (чекаут или worktree)
 #   seed catalog
