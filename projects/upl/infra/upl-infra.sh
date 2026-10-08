@@ -104,7 +104,25 @@ live_port() {
 
 peer_url() { printf 'http://localhost:%s' "$(live_port "$1")"; }
 
-port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -sTCP:LISTEN 2>/dev/null | grep -q .; }
+port_busy() { lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | grep -q .; }
+
+port_holder() { # <port> → "имя (ветка)" живого экземпляра с этим портом или пусто
+  local f n base p srcdir br
+  for f in "$RT"/run/*.pid; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" .pid)"
+    instance_running "$n" || continue
+    case "$n" in
+      *-*) base="$(svc_port "${n%%-*}")"; p=$((9000 + base - 8000)); srcdir="$(worktree_path "${n%%-*}" "${n##*-}")" ;;
+      *) p="$(svc_port "$n" 2>/dev/null)"; srcdir="$UPL_HOME/services/$(svc_repo "$n")" ;;
+    esac
+    [ "$p" = "$1" ] || continue
+    br="$(git -C "$srcdir" branch --show-current 2>/dev/null || true)"
+    [ -n "$br" ] || br="(detached)"
+    echo "$n, ветка $br"
+    return
+  done
+}
 
 # ── Окружение экземпляра ─────────────────────────────────────────────────────
 
@@ -439,6 +457,19 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     cur="$(git -C "$src" branch --show-current)"
     [ "$cur" = "develop" ] || die "основной чекаут $svc на ветке '$cur', а не develop: develop-экземпляр гоняет только develop (задачный код — через svc up --task)"
   fi
+  # Занятость проверяем до любых side effects: чужой env и БД не трогаются,
+  # отказ дешёвый (протокол параллельной работы - environment.md).
+  if instance_running "$name"; then
+    info "$name уже запущен (порт $port) — автоперезапуска нет; для нового кода: svc down + svc up"
+    return 0
+  fi
+  if port_busy "$port"; then
+    local holder; holder="$(port_holder "$port")"
+    if [ -n "$holder" ]; then
+      die "порт $port занят экземпляром $holder — чужой экземпляр не трогается; жди его остановки или согласуй владельца"
+    fi
+    die "порт $port занят посторонним процессом ($(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1"("$2")"}')) — экземпляр $name не поднят"
+  fi
   # env рендерим до миграций: мигать можно только с проверенным CONFIG_PATH
   # (environment.md), общий рендер даёт хост/порт/имя БД этого экземпляра.
   render_env "$svc" "$src" "$(envfile "$name")" "$port" "$dbname" "$inst_task"
@@ -450,13 +481,6 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     local want have
     want="$(max_migration "$src")"; have="$(migrate_applied_version "$(svc_dbhost "$svc")" "$dbname")"
     [ "$((10#${have:-0}))" -ge "$((10#${want:-0}))" ] || info "предупреждение: schema_migrations=$have, максимум миграций=$want ($dbname)"
-  fi
-  if instance_running "$name"; then
-    info "$name уже запущен (порт $port) — автоперезапуска нет; для нового кода: svc down + svc up"
-    return 0
-  fi
-  if port_busy "$port"; then
-    die "порт $port занят, экземпляр $name не поднят — освободи порт или останови занявший процесс"
   fi
   [ "$svc" = "auth" ] && { [ -e "$src/configs/.env" ] || ln -s "$(envfile "$name")" "$src/configs/.env"; }
   nohup bash "$SELF" __supervisor "$name" "$src" "$(envfile "$name")" "$proc" >/dev/null 2>&1 &
