@@ -434,6 +434,30 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     local dn; dn="$(svc_dbname "$svc" 2>/dev/null || true)"
     dbname=""; [ -n "$dn" ] && dbname="${dn}_${sfx}"
     src="$(worktree_path "$svc" "$sfx")"
+  else
+    name="$svc"
+    port="$(svc_port "$svc")"
+    dbname="$(svc_dbname "$svc")"
+    src="$repo"
+    local cur
+    cur="$(git -C "$src" branch --show-current)"
+    [ "$cur" = "develop" ] || die "основной чекаут $svc на ветке '$cur', а не develop: develop-экземпляр гоняет только develop (задачный код — через svc up --task)"
+  fi
+  # Занятость проверяем до любых side effects (worktree, клон БД, env, миграции):
+  # чужой экземпляр и его БД не трогаются, отказ дешёвый
+  # (протокол параллельной работы - environment.md).
+  if instance_running "$name"; then
+    info "$name уже запущен (порт $port) — автоперезапуска нет; для нового кода: svc down + svc up"
+    return 0
+  fi
+  if port_busy "$port"; then
+    local holder; holder="$(port_holder "$port")"
+    if [ -n "$holder" ]; then
+      die "порт $port занят экземпляром $holder — чужой экземпляр не трогается; жди его остановки или согласуй владельца"
+    fi
+    die "порт $port занят посторонним процессом ($(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1"("$2")"}')) — экземпляр $name не поднят"
+  fi
+  if [ "$inst_task" = "1" ]; then
     if [ ! -d "$src" ]; then
       ( cd "$repo" && git worktree add "$src" "$branch" 2>/dev/null ) \
         || ( cd "$repo" && git worktree add -b "$branch" "$src" "origin/$branch" 2>/dev/null ) \
@@ -448,27 +472,6 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     else
       dbname="$dn"
     fi
-  else
-    name="$svc"
-    port="$(svc_port "$svc")"
-    dbname="$(svc_dbname "$svc")"
-    src="$repo"
-    local cur
-    cur="$(git -C "$src" branch --show-current)"
-    [ "$cur" = "develop" ] || die "основной чекаут $svc на ветке '$cur', а не develop: develop-экземпляр гоняет только develop (задачный код — через svc up --task)"
-  fi
-  # Занятость проверяем до любых side effects: чужой env и БД не трогаются,
-  # отказ дешёвый (протокол параллельной работы - environment.md).
-  if instance_running "$name"; then
-    info "$name уже запущен (порт $port) — автоперезапуска нет; для нового кода: svc down + svc up"
-    return 0
-  fi
-  if port_busy "$port"; then
-    local holder; holder="$(port_holder "$port")"
-    if [ -n "$holder" ]; then
-      die "порт $port занят экземпляром $holder — чужой экземпляр не трогается; жди его остановки или согласуй владельца"
-    fi
-    die "порт $port занят посторонним процессом ($(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1"("$2")"}')) — экземпляр $name не поднят"
   fi
   # env рендерим до миграций: мигать можно только с проверенным CONFIG_PATH
   # (environment.md), общий рендер даёт хост/порт/имя БД этого экземпляра.
