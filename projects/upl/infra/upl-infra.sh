@@ -218,14 +218,28 @@ src_checksum() { # <src-dir> <env-file>
 
 cmd_supervisor() { # __supervisor <name> <src> <env> <proc>
   local name="$1" src="$2" env="$3" proc="$4"
-  local child="" last="" sum
+  local child="" last="" sum branch0 branch sfx
   # Своё имя процесса пишет сам супервизор: $! снаружи - pid обёртки nohup,
   # а не выжившего процесса, и pidfile с ним всегда показывает «остановлен».
   printf '%s\n' "$$" > "$(pidfile "$name")"
   trap ' [ -n "$child" ] && { pkill -P "$child" 2>/dev/null; kill "$child" 2>/dev/null; }; exit 0 ' TERM INT
   cd "$src" || exit 1
   export CONFIG_PATH="$env"
+  # Экземпляр обязан жить в ветке старта: чекаут переехал на другую ветку мимо
+  # svc switch - остановка вместо рестарта (guard ветки и миграции - только в svc up).
+  # Сверка в начале каждой итерации: одинаковые деревья веток и упавший child
+  # не должны дать рестарт-ветке или crash-recovery поднять код чужой ветки.
+  branch0="$(git branch --show-current 2>/dev/null || true)"
+  sfx=""; case "$name" in *-*) sfx=" --task UPL-${name##*-}";; esac
   while :; do
+    branch="$(git branch --show-current 2>/dev/null || true)"
+    if [ "$branch" != "$branch0" ]; then
+      printf '[%s] ветка чекаута сменилась (%s -> %s) - остановка; подними заново: svc up %s%s\n' \
+        "$(date '+%H:%M:%S')" "${branch0:-(detached)}" "${branch:-(detached)}" "${name%%-*}" "$sfx" >> "$(logfile "$name")"
+      [ -n "$child" ] && { pkill -P "$child" 2>/dev/null; kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; }
+      rm -f "$(pidfile "$name")" "$(childfile "$name")"
+      exit 0
+    fi
     sum="$(src_checksum "$src" "$env")"
     if [ -n "$last" ] && [ "$sum" != "$last" ] && [ -n "$child" ]; then
       printf '[%s] изменения исходников — рестарт\n' "$(date '+%H:%M:%S')" >> "$(logfile "$name")"
@@ -569,16 +583,26 @@ cmd_svc_switch() { # [<branch>] — переключить основные че
 
 cmd_svc_status() {
   local svc line inst pid child port
-  printf '%-24s %-6s %-8s %s\n' "INSTANCE" "PORT" "PID" "STATE"
+  printf '%-24s %-6s %-8s %-18s %s\n' "INSTANCE" "PORT" "PID" "BRANCH" "STATE"
   for svc in $KNOWN_SERVICES; do
     for inst in $(instance_names "$svc"); do
-      local base; base="$(svc_port "$svc")"
+      local base srcdir branch; base="$(svc_port "$svc")"
       port="$base"; case "$inst" in "$svc"-*) port=$((9000 + base - 8000));; esac
+      if [ "$inst" = "$svc" ]; then
+        srcdir="$UPL_HOME/services/$(svc_repo "$svc")"
+      else
+        srcdir="$(worktree_path "$svc" "${inst##*-}")"
+      fi
+      branch="-"
+      if [ -d "$srcdir" ]; then
+        branch="$(git -C "$srcdir" branch --show-current 2>/dev/null || true)"
+        [ -n "$branch" ] || branch="(detached)"
+      fi
       if instance_running "$inst"; then
         pid="$(cat "$(pidfile "$inst")")"
-        printf '%-24s %-6s %-8s %s\n' "$inst" "$port" "$pid" "запущен"
+        printf '%-24s %-6s %-8s %-18s %s\n' "$inst" "$port" "$pid" "$branch" "запущен"
       else
-        printf '%-24s %-6s %-8s %s\n' "$inst" "$port" "-" "остановлен"
+        printf '%-24s %-6s %-8s %-18s %s\n' "$inst" "$port" "-" "$branch" "остановлен"
       fi
     done
   done
