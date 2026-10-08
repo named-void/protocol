@@ -376,18 +376,13 @@ instance_names() { # <svc> → имена живых/зафиксированн�
 envoy_render_from() { # <src-dir> — config + standalone из чекаута, .eg (сертификаты) сохраняется
   local src="$1"
   [ -d "$src/config" ] || die "$src/config не найден"
-  # Сгенерированный backends.yaml живёт внутри config/ — при рендере сохраняем
-  # его, иначе file provider увидит удаление (мгновенные 503 на всех маршрутах).
-  local bk=""
-  if [ -f "$RT/envoy/config/backends.yaml" ]; then
-    bk="$RT/envoy/.eg/backends.keep"
-    cp "$RT/envoy/config/backends.yaml" "$bk"
-  fi
-  rm -rf "$RT/envoy/config" "$RT/envoy/standalone.yaml"
-  mkdir -p "$RT/envoy/.eg"
-  cp -R "$src/config" "$RT/envoy/config"
+  # backends.yaml — база из выбранной ветки (cp -R приносит её сам); удаляем
+  # всё остальное, не трогая сам watched-файл (file provider видит удаление).
+  # Порты живых экземпляров переписывает envoy_rewrite_backends_live.
+  mkdir -p "$RT/envoy/config"
+  find "$RT/envoy/config" -mindepth 1 ! -name backends.yaml -delete 2>/dev/null
+  cp -R "$src/config/" "$RT/envoy/config/"
   cp "$src/standalone.yaml" "$RT/envoy/standalone.yaml"
-  [ -z "$bk" ] || mv "$bk" "$RT/envoy/config/backends.yaml"
   envoy_patch_standalone
   envoy_rewrite_backends_live
 }
