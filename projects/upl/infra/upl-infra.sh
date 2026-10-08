@@ -124,6 +124,56 @@ port_holder() { # <port> → "имя (ветка)" живого экземпля
   done
 }
 
+reap_orphans() { # <port> <repo> → 0, если после зачистки осиротевших бинарей сервиса порт свободен
+  # Сирота = наш бинарь (api|worker|consumer|poller), чей cwd лежит в дереве
+  # $UPL_HOME/services/<repo> (чекаут или worktree) и чей живой родитель не из
+  # цепочки запуска (go run / супервизор). Чужие процессы не трогаются;
+  # -9 только по подтверждённым кандидатам после неудачного TERM.
+  local port="$1" repo="$2" pid name pids cwd ppid pcomm pcmd cand="" root
+  root="$(cd "$UPL_HOME" 2>/dev/null && pwd -P)/services/"
+  pids="$(lsof -nP -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null)"
+  [ -n "$pids" ] || return 0
+  for pid in $pids; do
+    name="$(ps -p "$pid" -o comm= 2>/dev/null)"; name="${name##*/}"
+    case "$name" in
+      api|worker|consumer|poller) ;;
+      *) continue ;;
+    esac
+    cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')"
+    case "$cwd" in
+      "$root$repo"*) ;;
+      *) continue ;;
+    esac
+    ppid="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ')"
+    if [ -n "$ppid" ] && [ "$ppid" != "0" ] && kill -0 "$ppid" 2>/dev/null; then
+      pcomm="$(ps -p "$ppid" -o comm= 2>/dev/null)"; pcomm="${pcomm##*/}"
+      pcmd="$(ps -p "$ppid" -o command= 2>/dev/null)"
+      case "$pcomm" in
+        go|compile) continue ;; # живой go run - экземпляр под присмотром
+      esac
+      case "$pcmd" in
+        *"__supervisor"*) continue ;; # живой супервизор - то же
+      esac
+    fi
+    cand="$cand $pid"
+    info "порт $1 занимал осиротевший бинарь $name($pid) без супервизора — гашу"
+    kill "$pid" 2>/dev/null
+  done
+  [ -n "$cand" ] || { lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | grep -q . && return 1; return 0; }
+  for i in 1 2 3 4 5 6; do
+    lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | grep -q . || return 0
+    sleep 0.5
+  done
+  for pid in $cand; do
+    kill -0 "$pid" 2>/dev/null || continue
+    name="$(ps -p "$pid" -o comm= 2>/dev/null)"; name="${name##*/}"
+    case "$name" in api|worker|consumer|poller) kill -9 "$pid" 2>/dev/null ;; esac
+  done
+  sleep 0.5
+  lsof -nP -tiTCP:"$1" -sTCP:LISTEN 2>/dev/null | grep -q . && return 1
+  return 0
+}
+
 # ── Окружение экземпляра ─────────────────────────────────────────────────────
 
 env_set() { # <file> <key> <value>
@@ -455,7 +505,9 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     if [ -n "$holder" ]; then
       die "порт $port занят экземпляром $holder — чужой экземпляр не трогается; жди его остановки или согласуй владельца"
     fi
-    die "порт $port занят посторонним процессом ($(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1"("$2")"}')) — экземпляр $name не поднят"
+    if ! reap_orphans "$port" "$(svc_repo "$svc")"; then
+      die "порт $port занят посторонним процессом ($(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print $1"("$2")"}')) — экземпляр $name не поднят"
+    fi
   fi
   if [ "$inst_task" = "1" ]; then
     if [ ! -d "$src" ]; then
@@ -472,6 +524,13 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     else
       dbname="$dn"
     fi
+  fi
+  # Удалённый отслеживаемый .env.example восстанавливаем сами (render_env без него
+  # невозможен); локальные правки существующего файла не трогаем.
+  if [ ! -f "$src/configs/.env.example" ] \
+    && git -C "$src" ls-files --error-unmatch configs/.env.example >/dev/null 2>&1; then
+    git -C "$src" checkout -- configs/.env.example
+    info "$name: восстановлен configs/.env.example (был удалён в чекауте)"
   fi
   # env рендерим до миграций: мигать можно только с проверенным CONFIG_PATH
   # (environment.md), общий рендер даёт хост/порт/имя БД этого экземпляра.
