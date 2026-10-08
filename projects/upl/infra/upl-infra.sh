@@ -484,8 +484,8 @@ cmd_svc_down() {
     case "$1" in
       --task) sfx="$(task_suffix "$2")"; shift 2 ;;
       --proc) proc="$2"; shift 2 ;;
+      *) shift ;;
     esac
-    shift
   done
   local name="$svc"; [ -n "$sfx" ] && name="$svc-$sfx"
   stop_instance "$name"
@@ -541,7 +541,7 @@ cmd_svc_status() {
 
 cmd_svc_logs() {
   local svc="$1"; shift; local sfx=""
-  while [ $# -gt 0 ]; do case "$1" in --task) sfx="$(task_suffix "$2")"; shift 2;; esac; shift; done
+  while [ $# -gt 0 ]; do case "$1" in --task) sfx="$(task_suffix "$2")"; shift 2;; *) shift;; esac; done
   local name="$svc"; [ -n "$sfx" ] && name="$svc-$sfx"
   tail -n 200 -f "$(logfile "$name")"
 }
@@ -550,8 +550,7 @@ cmd_svc_migrate() { # <svc> up|down [--task ...]
   local svc="$1"; shift
   local dir="up" sfx=""
   while [ $# -gt 0 ]; do
-    case "$1" in up|down) dir="$1" ;; --task) sfx="$(task_suffix "$2")"; shift 2 ;; esac
-    shift
+    case "$1" in up|down) dir="$1"; shift ;; --task) sfx="$(task_suffix "$2")"; shift 2 ;; *) shift ;; esac
   done
   local repo name dbname src
   repo="$UPL_HOME/services/$(svc_repo "$svc")"
