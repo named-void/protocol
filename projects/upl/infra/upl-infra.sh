@@ -398,7 +398,7 @@ envoy_patch_standalone() {
 # Пары "backend=порт" читает из файла $RT/envoy/.ports; нет пары — порт не меняется.
 envoy_backends_python() {
   python3 - "$RT/envoy/config/backends.yaml" "$RT/envoy/.ports" <<'PY'
-import re, sys
+import os, re, sys
 path, pairs_path = sys.argv[1], sys.argv[2]
 ports = {}
 for line in open(pairs_path):
@@ -423,7 +423,11 @@ for b in blocks:
         b = re.sub(r"- ip:\n(\s+)address: 127\.0\.0\.1\n(\s+)port: (\d+)",
                    lambda mm: f"- fqdn:\n{mm.group(1)}hostname: host.docker.internal\n{mm.group(2)}port: {mm.group(3)}", b)
     out.append(b)
-open(path, "w").write("\n---\n".join(out))
+# Атомарная запись: envoy gateway file provider надёжно ловит create/rename
+# нового inode, а модификацию существующего файла может не заметить.
+tmp = path + ".tmp"
+open(tmp, "w").write("\n---\n".join(out))
+os.replace(tmp, path)
 PY
 }
 
