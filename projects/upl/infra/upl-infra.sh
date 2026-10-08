@@ -5,8 +5,8 @@
 #
 # Экземпляры сервисов:
 #   develop (без суффикса)  — постоянные, основной чекаут сервиса, канонический
-#                             порт, общая БД без суффикса; авто-рестарт на новый
-#                             код (опрос изменений исходников).
+#                             порт, общая БД без суффикса; рестарт только явно:
+#                             svc down + svc up (автоцикла и слежения за кодом нет).
 #   задачи (суффикс ключа)  — worktree services/<repo>-UPL-<N>, ветка
 #                             feature/UPL-<N>, порт 9000+(порт-8000); БД <db>_<N>
 #                             (клон основной) только у задач с миграциями, иначе
@@ -18,9 +18,10 @@
 #                       down гасит их; задачные экземпляры не затрагиваются
 #   svc up|down|logs|status <svc> [--task UPL-XXXX | --branch <b> --suffix <N>] [--proc api|worker|consumer|poller]
 #   svc migrate <svc> [--task ...] up|down
-#   svc switch [<branch>] — переключить основные чекауты: у кого ветка есть — на неё,
-#                       у кого нет — на develop (без аргумента все — на develop);
-#                       поднятые develop-экземпляры переключённых сервисов останавливаются
+#   svc switch [<branch>] [--fetch] — переключить основные чекауты: у кого ветка
+#                       есть — на неё, у кого нет — на develop (без аргумента —
+#                       все на develop); поднятые develop-экземпляры переключённых
+#                       сервисов останавливаются; --fetch обновляет origin заранее
 #   seed catalog
 #   accept <UPL-XXXX>
 #   task close <UPL-XXXX>
@@ -211,52 +212,25 @@ max_migration() { # <src-dir> → номер последней up-миграц�
 
 # ── Супервизор экземпляра ────────────────────────────────────────────────────
 
-src_checksum() { # <src-dir> <env-file>
-  { find "$1" -type f \( -name '*.go' -o -name '*.sql' -o -name '*.yaml' -o -name '*.yml' \) \
-      -not -path '*/.git/*' -exec cksum {} \; ; cksum "$2" ; } 2>/dev/null | cksum
-}
-
-cmd_supervisor() { # __supervisor <name> <src> <env> <proc>
+cmd_supervisor() { # __supervisor <name> <src> <env> <proc> — запуск одним процессом, без автоцикла
   local name="$1" src="$2" env="$3" proc="$4"
-  local child="" last="" sum branch0 branch sfx
+  local child rc hint
   # Своё имя процесса пишет сам супервизор: $! снаружи - pid обёртки nohup,
   # а не выжившего процесса, и pidfile с ним всегда показывает «остановлен».
   printf '%s\n' "$$" > "$(pidfile "$name")"
   trap ' [ -n "$child" ] && { pkill -P "$child" 2>/dev/null; kill "$child" 2>/dev/null; }; exit 0 ' TERM INT
   cd "$src" || exit 1
   export CONFIG_PATH="$env"
-  # Экземпляр обязан жить в ветке старта: чекаут переехал на другую ветку мимо
-  # svc switch - остановка вместо рестарта (guard ветки и миграции - только в svc up).
-  # Сверка в начале каждой итерации: одинаковые деревья веток и упавший child
-  # не должны дать рестарт-ветке или crash-recovery поднять код чужой ветки.
-  branch0="$(git branch --show-current 2>/dev/null || true)"
-  sfx=""; case "$name" in *-*) sfx=" --task UPL-${name##*-}";; esac
-  while :; do
-    branch="$(git branch --show-current 2>/dev/null || true)"
-    if [ "$branch" != "$branch0" ]; then
-      printf '[%s] ветка чекаута сменилась (%s -> %s) - остановка; подними заново: svc up %s%s\n' \
-        "$(date '+%H:%M:%S')" "${branch0:-(detached)}" "${branch:-(detached)}" "${name%%-*}" "$sfx" >> "$(logfile "$name")"
-      [ -n "$child" ] && { pkill -P "$child" 2>/dev/null; kill "$child" 2>/dev/null; wait "$child" 2>/dev/null; }
-      rm -f "$(pidfile "$name")" "$(childfile "$name")"
-      exit 0
-    fi
-    sum="$(src_checksum "$src" "$env")"
-    if [ -n "$last" ] && [ "$sum" != "$last" ] && [ -n "$child" ]; then
-      printf '[%s] изменения исходников — рестарт\n' "$(date '+%H:%M:%S')" >> "$(logfile "$name")"
-      pkill -P "$child" 2>/dev/null
-      kill "$child" 2>/dev/null
-      wait "$child" 2>/dev/null
-      child=""
-    fi
-    last="$sum"
-    if [ -z "$child" ] || ! kill -0 "$child" 2>/dev/null; then
-      printf '[%s] старт: go run ./cmd/%s\n' "$(date '+%H:%M:%S')" "$proc" >> "$(logfile "$name")"
-      go run "./cmd/$proc" >> "$(logfile "$name")" 2>&1 &
-      child=$!
-      printf '%s' "$child" > "$(childfile "$name")"
-    fi
-    sleep 5
-  done
+  printf '[%s] старт: go run ./cmd/%s\n' "$(date '+%H:%M:%S')" "$proc" >> "$(logfile "$name")"
+  go run "./cmd/$proc" >> "$(logfile "$name")" 2>&1 &
+  child=$!
+  printf '%s' "$child" > "$(childfile "$name")"
+  wait "$child"
+  rc=$?
+  hint="$name"; case "$name" in *-*) hint="${name%%-*} --task UPL-${name##*-}";; esac
+  printf '[%s] процесс завершён (код %s) - автоперезапуска нет; подними заново: svc up %s\n' \
+    "$(date '+%H:%M:%S')" "$rc" "$hint" >> "$(logfile "$name")"
+  rm -f "$(pidfile "$name")" "$(childfile "$name")"
 }
 
 stop_instance() { # <name>
@@ -478,7 +452,7 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     [ "$((10#${have:-0}))" -ge "$((10#${want:-0}))" ] || info "предупреждение: schema_migrations=$have, максимум миграций=$want ($dbname)"
   fi
   if instance_running "$name"; then
-    info "$name уже запущен (порт $port) — код и конфиг подхватывает супервизор"
+    info "$name уже запущен (порт $port) — автоперезапуска нет; для нового кода: svc down + svc up"
     return 0
   fi
   if port_busy "$port"; then
@@ -539,14 +513,27 @@ cmd_svc_down_all() { # гасит develop-экземпляры всех серв
   fi
 }
 
-cmd_svc_switch() { # [<branch>] — переключить основные чекауты; без аргумента — все на develop
-  [ $# -le 1 ] || die "svc switch: максимум один аргумент — имя ветки"
-  local target="${1:-develop}"
+cmd_svc_switch() { # [<branch>] [--fetch] — переключить основные чекауты; без аргумента — все на develop
+  local target="" do_fetch="" pos=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --fetch) do_fetch=1 ;;
+      -*) die "svc switch: неизвестный флаг $1" ;;
+      *) pos=$((pos + 1)); target="$1" ;;
+    esac
+    shift
+  done
+  [ "$pos" -le 1 ] || die "svc switch: максимум одна ветка"
+  [ -n "$target" ] || target="develop"
   local svc repo cur tgt out failed=""
   for svc in $KNOWN_SERVICES; do
     repo="$UPL_HOME/services/$(svc_repo "$svc")"
     if [ ! -d "$repo" ]; then
       info "svc switch: $svc — чекаута нет ($repo), пропущен"; failed="$failed $svc"; continue
+    fi
+    if [ -n "$do_fetch" ]; then
+      git -C "$repo" fetch --quiet origin 2>/dev/null \
+        || info "svc switch: $svc — fetch не удался, ищу ветку по локальным ссылкам"
     fi
     tgt="$target"
     if [ "$tgt" != "develop" ] \
@@ -730,6 +717,8 @@ cmd_accept() { # <UPL-XXXX>
   [ -n "$(echo "$affected" | tr -d ' ')" ] || { info "нет затронутых сервисов задачи $key (нет worktree и экземпляров)"; return 0; }
 
   for svc in $affected; do
+    # Автоцикла нет: поднятый экземпляр задачи гасим, чтобы accept поднял актуальный код.
+    instance_running "$svc-$sfx" && stop_instance "$svc-$sfx"
     cmd_svc_up "$svc" --task "$key"
   done
 
