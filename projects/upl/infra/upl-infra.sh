@@ -1086,8 +1086,11 @@ cmd_task_close() { # <UPL-XXXX>
     fi
     local branch="feature/UPL-$sfx"
     if git -C "$repo" rev-parse --verify -q "refs/heads/$branch" >/dev/null; then
-      if git -C "$repo" branch -d "$branch" 2>/dev/null; then
-        info "$svc: ветка $branch удалена (слита)"
+      # -d проверяет upstream ветки, а не develop: неслитая в develop ветка
+      # удалялась бы молча. Явная проверка ancestry относительно develop.
+      if git -C "$repo" merge-base --is-ancestor "$branch" develop 2>/dev/null; then
+        git -C "$repo" branch -d "$branch" 2>/dev/null
+        info "$svc: ветка $branch удалена (слита в develop)"
       else
         info "$svc: ветка $branch ОСТАВЛЕНА — не слита в develop; удали вручную после MR"
       fi
