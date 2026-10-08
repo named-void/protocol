@@ -376,10 +376,18 @@ instance_names() { # <svc> → имена живых/зафиксированн�
 envoy_render_from() { # <src-dir> — config + standalone из чекаута, .eg (сертификаты) сохраняется
   local src="$1"
   [ -d "$src/config" ] || die "$src/config не найден"
+  # Сгенерированный backends.yaml живёт внутри config/ — при рендере сохраняем
+  # его, иначе file provider увидит удаление (мгновенные 503 на всех маршрутах).
+  local bk=""
+  if [ -f "$RT/envoy/config/backends.yaml" ]; then
+    bk="$RT/envoy/.eg/backends.keep"
+    cp "$RT/envoy/config/backends.yaml" "$bk"
+  fi
   rm -rf "$RT/envoy/config" "$RT/envoy/standalone.yaml"
   mkdir -p "$RT/envoy/.eg"
   cp -R "$src/config" "$RT/envoy/config"
   cp "$src/standalone.yaml" "$RT/envoy/standalone.yaml"
+  [ -z "$bk" ] || mv "$bk" "$RT/envoy/config/backends.yaml"
   envoy_patch_standalone
   envoy_rewrite_backends_live
 }
@@ -408,7 +416,7 @@ for line in open(pairs_path):
         continue
     k, v = line.rsplit("=", 1)
     ports[k] = int(v)
-text = open(path).read() if os.path.exists(path) else ""
+text = open(path).read()
 blocks = re.split(r"\n---\n", text)
 out = []
 for b in blocks:
@@ -734,13 +742,17 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
       applied="$esrc"
       info "switch: envoy — чекаут уже на '$target', конфиг применён из чекаута"
     else
-      if [ -d "$ewt" ] && ! git -C "$esrc" worktree list --porcelain | grep -q "^worktree $ewt\$"; then
-        if [ -d "$ewt/config" ]; then
-          die "switch: $ewt — не зарегистрирован как worktree, но содержит config; разберись вручную"
+      if [ -d "$ewt" ]; then
+        local ewtres
+        ewtres="$(cd "$ewt" 2>/dev/null && pwd -P)"
+        if ! git -C "$esrc" worktree list --porcelain | grep -qF "worktree $ewtres"; then
+          if [ -d "$ewt/config" ]; then
+            die "switch: $ewt — не зарегистрирован как worktree, но содержит config; разберись вручную"
+          fi
+          ebak="$ewt.idea-backup-$(date +%s)"
+          mv "$ewt" "$ebak"
+          info "switch: envoy — незарегистрированный каталог перенесён в $(basename "$ebak")"
         fi
-        ebak="$ewt.idea-backup-$(date +%s)"
-        mv "$ewt" "$ebak"
-        info "switch: envoy — незарегистрированный каталог перенесён в $(basename "$ebak")"
       fi
       if [ -d "$ewt" ]; then
         ebr="$(git -C "$ewt" branch --show-current 2>/dev/null)"
