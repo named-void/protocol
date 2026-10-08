@@ -14,8 +14,9 @@
 #
 # Usage: upl-infra.sh <команда>
 #   infra up|down|status [--with-keycloak]
-#   svc up | svc down — все сервисы из develop: up разворачивает develop-экземпляры,
-#                       down гасит их; задачные экземпляры не затрагиваются
+#   svc up | svc down — up разворачивает экземпляры по текущим веткам чекаутов:
+#                       develop → разв-экземпляр, feature/UPL-N → задачный из этого же
+#                       каталога; down гасит разв-экземпляры, задачные — svc down --task
 #   svc up|down|logs|status <svc> [--task UPL-XXXX | --branch <b> --suffix <N>] [--proc api|worker|consumer|poller]
 #   svc migrate <svc> [--task ...] up|down
 #   svc switch [<branch>] [--fetch] — переключить основные чекауты: у кого ветка
@@ -469,8 +470,20 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   command -v go >/dev/null || die "go не найден в PATH (/usr/local/go/bin)"
   docker ps --format '{{.Names}}' | grep -qx db || die "инфраструктура не поднята: upl-infra.sh infra up"
 
-  local repo src name port dbname env inst_task=0 own_db=0
+  local repo src name port dbname env inst_task=0 own_db=0 inst_local=0
   repo="$UPL_HOME/services/$(svc_repo "$svc")" || die "неизвестный сервис $svc"
+  # Без явного --task/--branch экземпляр следует ветке чекаута:
+  # develop → разв-экземпляр; feature/UPL-N → задачный из этого же каталога.
+  local cur
+  cur="$(git -C "$repo" branch --show-current 2>/dev/null || true)"
+  if [ -z "${task_key:-}${sfx:-}${branch:-}" ] \
+    && [[ "$cur" =~ ^[Ff]eature/[Uu][Pp][Ll]-([0-9]+)$ ]]; then
+    sfx="${BASH_REMATCH[1]}"
+    task_key="UPL-$sfx"
+    branch="$cur"
+    inst_task=1
+    inst_local=1
+  fi
   if [ -n "${task_key:-}${sfx:-}" ]; then
     [ -z "$sfx" ] && sfx="$(task_suffix "$task_key")"
     [ -n "$sfx" ] || die "svc up: не распознал суффикс задачи"
@@ -489,9 +502,7 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     port="$(svc_port "$svc")"
     dbname="$(svc_dbname "$svc")"
     src="$repo"
-    local cur
-    cur="$(git -C "$src" branch --show-current)"
-    [ "$cur" = "develop" ] || die "основной чекаут $svc на ветке '$cur', а не develop: develop-экземпляр гоняет только develop (задачный код — через svc up --task)"
+    [ "$cur" = "develop" ] || die "$svc: ветка '$cur' — не develop и не задачная (feature/UPL-N); переключи чекаут (svc switch) или подними явно через --task"
   fi
   # Занятость проверяем до любых side effects (worktree, клон БД, env, миграции):
   # чужой экземпляр и его БД не трогаются, отказ дешёвый
@@ -510,10 +521,15 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     fi
   fi
   if [ "$inst_task" = "1" ]; then
+    src="$(worktree_path "$svc" "$sfx")"
     if [ ! -d "$src" ]; then
-      ( cd "$repo" && git worktree add "$src" "$branch" 2>/dev/null ) \
-        || ( cd "$repo" && git worktree add -b "$branch" "$src" "origin/$branch" 2>/dev/null ) \
-        || die "нет ветки $branch у $(svc_repo "$svc") — создай её или проверь ключ"
+      if [ -n "${inst_local:-}" ]; then
+        src="$repo" # worktree ещё нет — задачный экземпляр из самого чекаута: ветка уже в нём
+      else
+        ( cd "$repo" && git worktree add "$src" "$branch" 2>/dev/null ) \
+          || ( cd "$repo" && git worktree add -b "$branch" "$src" "origin/$branch" 2>/dev/null ) \
+          || die "нет ветки $branch у $(svc_repo "$svc") — создай её или проверь ключ"
+      fi
     fi
     local dbh; dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
     # БД задачи - только у задачи с миграциями (diff против origin/develop); создаётся
