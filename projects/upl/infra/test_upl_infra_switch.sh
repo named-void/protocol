@@ -22,6 +22,7 @@ ck() { local desc="$1"; shift
 run() { OUT=$(UPL_HOME=$SB bash "$SCR" "$@" 2>&1); RC=$?; printf '%s\n' "$OUT" | sed 's/^/   /'; }
 alive() { kill -0 "$1" 2>/dev/null; }
 dead() { ! kill -0 "$1" 2>/dev/null; }
+noref() { ! git -C "$1" show-ref --verify -q "refs/heads/$2"; }
 FAKEPID=""
 trap '[ -n "$FAKEPID" ] && alive "$FAKEPID" && kill "$FAKEPID" 2>/dev/null; rm -rf "$SB"' EXIT
 BR() { git -C "$1" branch --show-current; }
@@ -139,6 +140,24 @@ ck "svc_base_branch вернул develop, а не локальный master" [ "
 run svc switch develop
 ck "envoy на develop (DWIM из origin)" [ "$(BR "$SB/services/envoy")" = develop ]
 ck "рендер из develop-контента" grep -q "name: auth$" "$RT/envoy/config/backends.yaml"
+
+echo "7c. task close: гейт ancestry по канону репозитория (envoy - master)"
+git -C "$SB/services/envoy" switch -q master
+git -C "$SB/services/envoy" branch -D develop
+git -C "$SB/services/envoy" remote remove origin
+git -C "$SB/services/envoy" switch -c feature/UPL-888
+git -C "$SB/services/envoy" commit -qm t --allow-empty
+git -C "$SB/services/envoy" switch -q master
+git -C "$SB/services/envoy" merge --no-ff -qm merge-888 feature/UPL-888
+git -C "$SB/services/envoy" worktree add -q "$SB/services/envoy-UPL-888" feature/UPL-888
+run task close UPL-888
+ck "worktree 888 снят"   [ ! -d "$SB/services/envoy-UPL-888" ]
+ck "слитая в master ветка удалена" noref "$SB/services/envoy" feature/UPL-888
+ck "гейт назвал канон master" bash -c 'printf "%s" "$0" | grep -q "слита в master"' "$OUT"
+run task close UPL-999
+ck "worktree 999 снят"   [ ! -d "$SB/services/envoy-UPL-999" ]
+ck "неслитая в master ветка оставлена" git -C "$SB/services/envoy" show-ref --verify -q "refs/heads/feature/UPL-999"
+ck "отказ назвал канон master" bash -c 'printf "%s" "$0" | grep -q "не слита в master"' "$OUT"
 
 echo "8. refresh_dev_peers: сменившийся пир → рестарт разв-экземпляра"
 mkdir -p "$RT/run" "$RT/env" "$RT/log"
