@@ -22,7 +22,8 @@
 #   svc switch [<branch>] [--fetch] — переключить основные чекауты: у кого ветка
 #                       есть — на неё, у кого нет — на develop (без аргумента —
 #                       все на develop); поднятые develop-экземпляры переключённых
-#                       сервисов останавливаются; --fetch обновляет origin заранее
+#                       сервисов останавливаются; --fetch обновляет origin заранее;
+#                       envoy: конфиг из worktree задачи, на develop — develop-конфиг
 #   svc up --task UPL-XXXX — задачные экземпляры ветки сразу для всех сервисов,
 #                       где она есть (чекаут или worktree)
 #   seed catalog
@@ -407,7 +408,7 @@ for line in open(pairs_path):
         continue
     k, v = line.rsplit("=", 1)
     ports[k] = int(v)
-text = open(path).read()
+text = open(path).read() if os.path.exists(path) else ""
 blocks = re.split(r"\n---\n", text)
 out = []
 for b in blocks:
@@ -720,6 +721,45 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
     fi
     info "svc switch: $svc → '$tgt'"
   done
+  # envoy: на задачную ветку применяется конфиг из её worktree или из чекаута,
+  # стоящего на этой ветке; неудача останавливает switch, а не тихо берёт develop.
+  # При возврате на develop восстанавливается develop-конфиг.
+  local applied="" esfx esrc="$UPL_HOME/services/envoy" ewt="$UPL_HOME/services/envoy-UPL-0" ebak ebr
+  if [[ "$target" =~ ^[Ff]eature/[Uu][Pp][Ll]-([0-9]+)$ ]] \
+    && { git -C "$esrc" show-ref --verify -q "refs/heads/$target" \
+      || git -C "$esrc" show-ref --verify -q "refs/remotes/origin/$target"; }; then
+    esfx="${BASH_REMATCH[1]}"
+    ewt="$UPL_HOME/services/envoy-UPL-$esfx"
+    if [ "$(git -C "$esrc" branch --show-current 2>/dev/null)" = "$target" ]; then
+      applied="$esrc"
+      info "switch: envoy — чекаут уже на '$target', конфиг применён из чекаута"
+    else
+      if [ -d "$ewt" ] && ! git -C "$esrc" worktree list --porcelain | grep -q "^worktree $ewt\$"; then
+        if [ -d "$ewt/config" ]; then
+          die "switch: $ewt — не зарегистрирован как worktree, но содержит config; разберись вручную"
+        fi
+        ebak="$ewt.idea-backup-$(date +%s)"
+        mv "$ewt" "$ebak"
+        info "switch: envoy — незарегистрированный каталог перенесён в $(basename "$ebak")"
+      fi
+      if [ -d "$ewt" ]; then
+        ebr="$(git -C "$ewt" branch --show-current 2>/dev/null)"
+        [ "$ebr" = "$target" ] || die "switch: $ewt — на ветке '$ebr', а требуется '$target'; разберись вручную"
+        applied="$ewt"
+      else
+        ( cd "$esrc" && git worktree add "$ewt" "$target" 2>/dev/null ) \
+          || ( cd "$esrc" && git worktree add -b "$target" "$ewt" "origin/$target" 2>/dev/null ) \
+          || die "switch: не удалось создать worktree envoy для '$target'"
+        copy_local_env "$esrc" "$ewt"
+        applied="$ewt"
+      fi
+      info "switch: envoy — конфиг применён из worktree задачи"
+    fi
+    envoy_render_from "$applied"
+  elif [ "$target" = "develop" ]; then
+    envoy_render_for_task ""
+    info "switch: envoy — применён develop-конфиг"
+  fi
   [ -z "$failed" ] || die "не переключены:$failed — причины выше; остальные переключены"
 }
 
@@ -883,6 +923,66 @@ cmd_accept() { # <UPL-XXXX>
   fi
   sleep 2 # file provider подхватывает конфиг
 
+  # bff-блок задачи обязан иметь правила в отрендеренных маршрутах envoy:
+  # отсутствие правила иначе ловится только этим прогоном (environment.md).
+  # Сверяются routes[].match (method+path; :param покрыт regex-правилом) задачной
+  # aggregation.yaml против origin/develop-базовой; secondary/filter и пути без
+  # match не требуют envoy-правил.
+  local agg="$UPL_HOME/services/bff-UPL-$sfx/configs/aggregation.yaml"
+  if [ -f "$agg" ]; then
+    local aggmiss
+    aggmiss="$(python3 - "$agg" "$UPL_HOME/services/bff" "$RT/envoy/config/routes.yaml" <<'PY'
+import re, subprocess, sys
+agg_path, bff_repo, routes_path = sys.argv[1], sys.argv[2], sys.argv[3]
+
+def agg_endpoints(text):
+    eps = set()
+    for m in re.finditer(r"  - match:\s+method: (\S+)\s+path: (\S+)", text):
+        eps.add((m.group(1), m.group(2)))
+    for m in re.finditer(r"  - match:\s+path: (\S+)\s+method: (\S+)", text):
+        eps.add((m.group(2), m.group(1)))
+    return eps
+
+base = subprocess.run(["git", "-C", bff_repo, "show",
+                       "origin/develop:configs/aggregation.yaml"],
+                      capture_output=True, text=True).stdout
+new = agg_endpoints(open(agg_path).read()) - agg_endpoints(base)
+
+bff_matches = []
+for doc in open(routes_path).read().split("\n---\n"):
+    if "kind: HTTPRoute" not in doc:
+        continue
+    if re.search(r"kind: Backend\s*\n\s*name: bff", doc) is None:
+        continue
+    for mm in re.finditer(r"- path:\s+type: (\S+)\s+value: (.+)\s+method: (\S+)", doc):
+        bff_matches.append((mm.group(1), mm.group(2).strip(), mm.group(3)))
+    for mm in re.finditer(r"- method: (\S+)\s+path:\s+type: (\S+)\s+value: (.+)", doc):
+        bff_matches.append((mm.group(2), mm.group(3).strip(), mm.group(1)))
+
+def covered(method, path):
+    for ptype, value, pmethod in bff_matches:
+        if pmethod != method:
+            continue
+        if ptype == "Exact" and value == path:
+            return True
+        if ptype == "RegularExpression":
+            v = value.strip("^$")
+            if ":" in path:
+                if path.startswith(v.split("(")[0]):
+                    return True
+            elif v == path:
+                return True
+        if ptype == "PathPrefix" and path.startswith(value):
+            return True
+    return False
+
+missing = [f"{m} {p}" for m, p in sorted(new) if not covered(m, p)]
+print(" ".join(missing))
+PY
+)"
+    [ -z "$aggmiss" ] || die "accept: нет envoy-правил для агрегированных endpoints задачи:$aggmiss — добавь правило в routes.yaml envoy и повтори accept"
+  fi
+
   info ""
   info "Приёмка $key — envoy: http://localhost:8110"
   local svc port methods res
@@ -899,6 +999,9 @@ cmd_accept() { # <UPL-XXXX>
         info "• $svc: http://localhost:$port/swagger/index.html - изменённые: $methods" ;;
     esac
   done
+  if [ -n "${aggmiss:-}" ]; then
+    die "accept: нет envoy-правил для агрегированных endpoints задачи:$aggmiss — добавь правило в routes.yaml envoy и повтори accept"
+  fi
 }
 
 # ── task close ───────────────────────────────────────────────────────────────
