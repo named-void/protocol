@@ -23,6 +23,8 @@
 #                       есть — на неё, у кого нет — на develop (без аргумента —
 #                       все на develop); поднятые develop-экземпляры переключённых
 #                       сервисов останавливаются; --fetch обновляет origin заранее
+#   svc up <branch> | svc up --task UPL-XXXX — задачные экземпляры ветки сразу для
+#                       всех сервисов, где она есть (чекаут или worktree)
 #   seed catalog
 #   accept <UPL-XXXX>
 #   task close <UPL-XXXX>
@@ -484,6 +486,11 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     inst_task=1
     inst_local=1
   fi
+  # Явный --task на ветке, занятой самим чекаутом: worktree невозможен,
+  # экземпляр поднимается из чекаута (тот же код).
+  if [ -n "$sfx" ] && [ "$(task_suffix "$cur" 2>/dev/null)" = "$sfx" ]; then
+    inst_local=1
+  fi
   if [ -n "${task_key:-}${sfx:-}" ]; then
     [ -z "$sfx" ] && sfx="$(task_suffix "$task_key")"
     [ -n "$sfx" ] || die "svc up: не распознал суффикс задачи"
@@ -523,7 +530,7 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   if [ "$inst_task" = "1" ]; then
     src="$(worktree_path "$svc" "$sfx")"
     if [ ! -d "$src" ]; then
-      if [ -n "${inst_local:-}" ]; then
+      if [ "$inst_local" = "1" ]; then
         src="$repo" # worktree ещё нет — задачный экземпляр из самого чекаута: ветка уже в нём
       else
         ( cd "$repo" && git worktree add "$src" "$branch" 2>/dev/null ) \
@@ -588,10 +595,30 @@ cmd_svc_down() {
   info "$name остановлен"
 }
 
-cmd_svc_up_all() { # develop-экземпляры всех сервисов; отказ одного не мешает остальным
+cmd_svc_up_all() { # разв-экземпляры всех сервисов; отказ одного не мешает остальным
   local failed="" svc
   for svc in $KNOWN_SERVICES; do
     ( cmd_svc_up "$svc" ) || failed="$failed $svc"
+  done
+  [ -z "$failed" ] || die "не поднялись:$failed — причины выше; остальные экземпляры работают"
+}
+
+cmd_svc_up_branch() { # <branch> — задачные экземпляры ветки для всех сервисов, где она есть
+  local branch="$1" svc repo failed=""
+  [ -n "$(task_suffix "$branch")" ] || die "svc up: '$branch' — не задачная ветка (feature/UPL-N)"
+  for svc in $KNOWN_SERVICES; do
+    repo="$UPL_HOME/services/$(svc_repo "$svc")"
+    if [ ! -d "$repo" ]; then
+      info "svc up: $svc — чекаута нет ($repo), пропущен"; failed="$failed $svc"; continue
+    fi
+    # ветка доступна: это текущий чекаут, локальная ветка или есть на origin
+    if [ "$(git -C "$repo" branch --show-current 2>/dev/null)" = "$branch" ] \
+      || git -C "$repo" show-ref --verify -q "refs/heads/$branch" \
+      || git -C "$repo" show-ref --verify -q "refs/remotes/origin/$branch"; then
+      ( cmd_svc_up "$svc" --task "UPL-$(task_suffix "$branch")" --branch "$branch" ) || failed="$failed $svc"
+    else
+      info "svc up: $svc — ветки '$branch' нет, пропущен"
+    fi
   done
   [ -z "$failed" ] || die "не поднялись:$failed — причины выше; остальные экземпляры работают"
 }
@@ -1205,7 +1232,12 @@ case "${1:-}" in
       up|down|logs|migrate)
         s="${1:-}"; shift || true
         case "$action" in
-          up) if [ -z "$s" ]; then cmd_svc_up_all; else cmd_svc_up "$s" "$@"; fi ;;
+          up) if [ -z "$s" ]; then cmd_svc_up_all
+              elif [ "$s" = "--task" ]; then
+                t="${1:-}"; [ -n "$t" ] || die "svc up: --task требует ключ, например UPL-1226"
+                cmd_svc_up_branch "feature/UPL-$(task_suffix "$t")"
+              elif svc_repo "$s" >/dev/null 2>&1; then cmd_svc_up "$s" "$@"
+              else cmd_svc_up_branch "$s"; fi ;;
           down) if [ -z "$s" ]; then cmd_svc_down_all; else cmd_svc_down "$s" "$@"; fi ;;
           logs) cmd_svc_logs "$s" "$@" ;;
           migrate) cmd_svc_migrate "$s" "$@" ;;
