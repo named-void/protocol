@@ -103,6 +103,12 @@ if [[ "$MODE" == "verify" ]]; then
       mkdir -p "$VERIFY_ROOT/$relative_path"
       cp -R "$ORIGINAL_SERVICE_ROOT/$relative_path/." "$VERIFY_ROOT/$relative_path/" \
         || { printf 'блокер: не удалось скопировать verify input %s\n' "$relative_path" >&2; exit 99; }
+    else
+      # Молчаливый пропуск маскирует недосмотр: IFS-сплит рвёт путь с пробелом
+      # на половины, а файл с хвостовым слэшем не матчится ни -f, ни -e - verify
+      # проходил без реальной проверки неизменности.
+      printf 'блокер: FINAL_CHECKS_VERIFY_SEED_PATHS: путь отсутствует в target (пробелы внутри пути и хвостовой слэш у файла не поддерживаются): %s\n' "$relative_path" >&2
+      exit 99
     fi
   done
 fi

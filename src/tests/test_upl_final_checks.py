@@ -210,6 +210,34 @@ exit 0
             (self.repository / "configs" / ".env").read_text(encoding="utf-8"),
         )
 
+    def test_verify_rejects_missing_seed_path(self) -> None:
+        candidate = self.git_output("rev-parse", "HEAD")
+
+        result = self.run_checks(
+            "verify",
+            mutates=False,
+            candidate=candidate,
+            seed_paths="api/docs configs/missing",
+        )
+
+        self.assertEqual(99, result.returncode, result.stdout + result.stderr)
+        self.assertIn("путь отсутствует в target", result.stderr)
+        self.assertIn("configs/missing", result.stderr)
+
+    def test_verify_rejects_trailing_slash_on_seeded_file(self) -> None:
+        candidate = self.git_output("rev-parse", "HEAD")
+
+        result = self.run_checks(
+            "verify",
+            mutates=False,
+            candidate=candidate,
+            seed_paths="api/docs configs/.env/",
+        )
+
+        self.assertEqual(99, result.returncode, result.stdout + result.stderr)
+        self.assertIn("путь отсутствует в target", result.stderr)
+        self.assertIn("configs/.env/", result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
