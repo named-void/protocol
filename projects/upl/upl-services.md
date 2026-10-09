@@ -130,6 +130,7 @@
 
 ## HTTP binding и семантика обновления
 
+- В httperrors/v2 `BindQuery`/`BindJSON` возвращают true при успехе и false при ошибке; проверки инвертируются относительно v1. `ReportBindError` сохраняет конвенцию true=ошибка. При миграции сервиса с v1 инвертируй существующие проверки биндинга.
 - UUID в query связывай непосредственно в `uuid.UUID`, `*uuid.UUID` или `[]uuid.UUID`; для Gin v1.12 используй `parser=encoding.TextUnmarshaler`, а для CSV-списка дополнительно `collection_format:"csv"`.
 - Массив объектов в query (`[]PostbackItem` и подобные) swagger-генератор `swag` схемой объекта описывать не умеет: корректная аннотация роняет генерацию. Используй принятое приближение `swaggertype:"array,object,string"` + `collectionFormat:"multi"`, а фактическую кодировку (индексную нотацию `items.{index}.{field}`) фиксируй godoc поля и `@Description` метода. Расхождение swagger-схемы (массив строк) с реальной кодировкой и godoc — известное ограничение генератора, зафиксированное конвенцией, а не противоречие контракта; вопрос и finding по нему не поднимай.
 - Обязательность поля в swagger (`required`) swaggo выводит из тега `binding:"required"`, а не из `json`-тега (проверено `make swagger`): finding вида «`omitempty` скрывает обязательность в swagger» неверен по обоснованию.
