@@ -87,6 +87,12 @@
   Отсутствующий в target элемент (хвостовой слэш у файла, пробелы внутри пути, опечатка) - блокер 99, молчаливого пропуска нет.
   Для каждого обязательного generated-файла вне Git зафиксируй путь и SHA-256 в `state.md`.
 
+## Локальный стенд и envoy
+
+- Задачный конфиг envoy (маршруты задачи + SecurityPolicy) применяется полным `svc up --task UPL-<N>` (или `svc switch`); точечный `svc up <svc> --task` перерендеривает конфиг шлюза базовым рендером и задачные маршруты теряют — после него задачный конфиг применяют повторным полным `svc up --task`.
+- Dev-login (`POST /auth/dev/login` c `{"role": ...}`) отвечает 204 с пустым телом и сессией в Cookie (`AccessToken`); Bearer-токен он не выдаёт. Роль должна существовать в БД user-service; `/auth/validate` и защищённые методы без сессии отвечают 401.
+- Runtime-проверка envoy-конфига локально — по README репозитория envoy, раздел Docker: предварительный `certgen --local --config-home /workspace/.eg`, в standalone.yaml в `provider.custom.resource.infrastructure.host` задать `configHome/dataHome: /workspace/.eg`, бэкенды из контейнера — `host.docker.internal` (fqdn; ip-адрес схемой отвергается). Нюанс: bootstrap-файл standalone.yaml не класть в каталог ресурсов `config/` — file provider читает все yaml каталога как ресурсы.
+
 ## Авторизация и identity
 
 - Полный запрет или разрешение метода по роли — scope Auth и API Gateway (envoy), внутри сервисов не дублируется. Требование «добавить в ролевую доступ к методу» выполняй в auth-service записями `permission`/`role_permission`; их id задавай явными UUID-литералами в миграции, чтобы последующие миграции ссылались на них на всех стендах.
