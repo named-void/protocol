@@ -24,12 +24,15 @@ class UplFinalChecksTest(unittest.TestCase):
         (self.repository / "formatted.go").write_text(
             "package service\n", encoding="utf-8"
         )
-        (self.repository / ".gitignore").write_text("api/docs/\n", encoding="utf-8")
+        (self.repository / ".gitignore").write_text("api/docs/\nconfigs/.env\n", encoding="utf-8")
         self.git("add", ".gitignore", "go.mod", "formatted.go")
         self.git("commit", "-m", "initial")
         generated = self.repository / "api" / "docs" / "generated.go"
         generated.parent.mkdir(parents=True)
         generated.write_text("package docs\n", encoding="utf-8")
+        env_file = self.repository / "configs" / ".env"
+        env_file.parent.mkdir(parents=True)
+        env_file.write_text("APP_ENV=local\n", encoding="utf-8")
 
         self.fake_bin = self.root / "bin"
         self.fake_bin.mkdir()
@@ -55,6 +58,9 @@ if [ "${FAKE_MAKE_MUTATES:-0}" = "1" ]; then
 fi
 if [ "${FAKE_SEED_MUTATES:-0}" = "1" ]; then
   printf 'package docs // regenerated\n' > api/docs/generated.go
+fi
+if [ "${FAKE_SEED_FILE_MUTATES:-0}" = "1" ]; then
+  printf 'APP_ENV=mutated\n' > configs/.env
 fi
 exit 0
 """,
@@ -93,6 +99,8 @@ exit 0
         mutates: bool,
         candidate: str | None = None,
         seed_mutates: bool = False,
+        seed_file_mutates: bool = False,
+        seed_paths: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
         environment = {
             **os.environ,
@@ -100,9 +108,12 @@ exit 0
             "FAKE_GOPATH": str(self.fake_gopath),
             "FAKE_MAKE_MUTATES": "1" if mutates else "0",
             "FAKE_SEED_MUTATES": "1" if seed_mutates else "0",
+            "FAKE_SEED_FILE_MUTATES": "1" if seed_file_mutates else "0",
             "PATH": f"{self.fake_bin}:{os.environ['PATH']}",
             "TMPDIR": str(self.logs),
         }
+        if seed_paths is not None:
+            environment["FINAL_CHECKS_VERIFY_SEED_PATHS"] = seed_paths
         if candidate is not None:
             environment["CANDIDATE_REF"] = candidate
         return subprocess.run(
@@ -161,6 +172,43 @@ exit 0
         self.assertIn("seeded artifact purity: не пройдено", result.stdout)
         generated = self.repository / "api" / "docs" / "generated.go"
         self.assertEqual("package docs\n", generated.read_text(encoding="utf-8"))
+
+    def test_verify_seeds_ignored_file_path(self) -> None:
+        candidate = self.git_output("rev-parse", "HEAD")
+
+        result = self.run_checks(
+            "verify",
+            mutates=False,
+            candidate=candidate,
+            seed_paths="api/docs configs/.env",
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("git status --short: чисто", result.stdout)
+        self.assertEqual(
+            "APP_ENV=local\n",
+            (self.repository / "configs" / ".env").read_text(encoding="utf-8"),
+        )
+        self.assertEqual("", self.git_output("status", "--porcelain"))
+
+    def test_verify_rejects_changes_to_seeded_ignored_file(self) -> None:
+        candidate = self.git_output("rev-parse", "HEAD")
+
+        result = self.run_checks(
+            "verify",
+            mutates=False,
+            candidate=candidate,
+            seed_file_mutates=True,
+            seed_paths="api/docs configs/.env",
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("seeded artifact purity: не пройдено", result.stdout)
+        self.assertIn("configs/.env", result.stdout)
+        self.assertEqual(
+            "APP_ENV=local\n",
+            (self.repository / "configs" / ".env").read_text(encoding="utf-8"),
+        )
 
 
 if __name__ == "__main__":

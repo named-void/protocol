@@ -86,7 +86,15 @@ if [[ "$MODE" == "verify" ]]; then
       printf 'блокер: небезопасный FINAL_CHECKS_VERIFY_SEED_PATHS: %s\n' "$relative_path" >&2
       exit 99
     fi
-    if [[ -e "$ORIGINAL_SERVICE_ROOT/$relative_path" ]]; then
+    if [[ -f "$ORIGINAL_SERVICE_ROOT/$relative_path" ]]; then
+      # Seed-путь может быть файлом (gitignored configs/.env): mkdir -p по
+      # самому пути создал бы каталог с именем файла, а `cp -R src/.` на файле
+      # падает («не удалось скопировать verify input»). Создаём родительский
+      # каталог и копируем файл целиком.
+      mkdir -p "$VERIFY_ROOT/$(dirname "$relative_path")"
+      cp "$ORIGINAL_SERVICE_ROOT/$relative_path" "$VERIFY_ROOT/$relative_path" \
+        || { printf 'блокер: не удалось скопировать verify input %s\n' "$relative_path" >&2; exit 99; }
+    elif [[ -e "$ORIGINAL_SERVICE_ROOT/$relative_path" ]]; then
       # `cp -R src dst` при существующем dst кладёт src ВНУТРЬ dst
       # (api/docs/docs/): в обоих наблюдавшихся сервисах в api/docs лежат
       # tracked-файлы, поэтому каталог в worktree уже существует, и вложенная
