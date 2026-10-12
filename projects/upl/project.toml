@@ -88,7 +88,7 @@ profiles = [
 
 [vcs]
 branch_types = ["feature", "bugfix", "hotfix"]
-commit_title_format = "<KEY> <прошедшее время>"
+commit_title_format = "<KEY> <описание в прошедшем времени>"
 
 [thresholds]
 review_wait_seconds = 120

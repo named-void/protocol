@@ -57,7 +57,7 @@ hosts = ["<vcs-host>"]
 # дефолт develop (master для infrastructure-репозиториев) живёт в скриптах
 # vcs-host, фактическая база фиксируется в Status карточки на Branch-Sync.
 branch_types = ["feature", "bugfix", "hotfix"]
-commit_title_format = "<KEY> <прошедшее время>"
+commit_title_format = "<KEY> <описание в прошедшем времени>"
 
 [dispatch]
 # Префикс ключа задачи -> путь группы проектов в хосте.
