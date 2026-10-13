@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-SCRIPT = Path(__file__).parents[1] / "skills" / "mreviewer" / "scripts" / "resolve_mr.py"
+SCRIPT = Path(__file__).parents[1] / "skills" / "protocol" / "scripts" / "resolve_mr.py"
 SPEC = importlib.util.spec_from_file_location("resolve_mr", SCRIPT)
 assert SPEC and SPEC.loader
 resolve_mr = importlib.util.module_from_spec(SPEC)
@@ -31,7 +31,7 @@ class ResolveMrTest(unittest.TestCase):
                 "https://gitlab.example.com/group/%2E%2E/project/-/merge_requests/1"
             )
 
-    def test_resolves_local_checkout_and_profiles_offline(self) -> None:
+    def test_resolves_project_and_local_checkout_offline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             checkout = root / "services" / "catalog"
@@ -49,36 +49,23 @@ class ResolveMrTest(unittest.TestCase):
                 ],
                 check=True,
             )
-            profile = root / "upl.md"
-            profile.write_text("# profile\n", encoding="utf-8")
-            with (
-                mock.patch.object(
-                    resolve_mr.skills_config,
-                    "resolve_vcs_project",
-                    return_value={
-                        "name": "upl",
-                        "namespace": "getblogger/upl",
-                        "local_path": checkout,
-                    },
-                ),
-                mock.patch.object(
-                    resolve_mr.skills_config,
-                    "profiles_for_path",
-                    return_value=[profile],
-                ),
+            with mock.patch.object(
+                resolve_mr.skills_config,
+                "resolve_vcs_project",
+                return_value={
+                    "name": "upl",
+                    "namespace": "getblogger/upl",
+                    "local_path": checkout,
+                },
             ):
                 result = resolve_mr.resolve(
                     "https://gitlab.example.com/getblogger/upl/services/catalog/-/merge_requests/7"
                 )
 
+            self.assertEqual("upl", result["profile"])
             self.assertEqual(str(checkout.resolve()), result["local_path"])
             self.assertTrue(result["local_exists"])
             self.assertTrue(result["checkout_matches"])
-            self.assertEqual(
-                [str(profile.resolve())],
-                result["rules_paths"],
-            )
-            self.assertTrue(result["rules_exist"])
 
     def test_rejects_checkout_with_different_origin(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -101,28 +88,6 @@ class ResolveMrTest(unittest.TestCase):
                     checkout, "gitlab.example.com", "group/project"
                 )
             )
-
-    def test_allows_project_without_profiles(self) -> None:
-        with (
-            mock.patch.object(
-                resolve_mr.skills_config,
-                "resolve_vcs_project",
-                return_value={
-                    "name": "plain",
-                    "namespace": "group",
-                    "local_path": Path("/missing/checkout"),
-                },
-            ),
-            mock.patch.object(
-                resolve_mr.skills_config, "profiles_for_path", return_value=[]
-            ),
-        ):
-            result = resolve_mr.resolve(
-                "https://gitlab.example.com/group/project/-/merge_requests/7"
-            )
-
-        self.assertEqual([], result["rules_paths"])
-        self.assertTrue(result["rules_exist"])
 
 
 if __name__ == "__main__":

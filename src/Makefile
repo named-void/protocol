@@ -13,7 +13,6 @@ SKILL_PAIRS := protocol $(SKILLS_DIR)/protocol \
 	text-edit $(SKILLS_DIR)/text-edit \
 	git-workflow $(SKILLS_DIR)/git-workflow \
 	self-directed $(SKILLS_DIR)/self-directed \
-	mreviewer $(SKILLS_DIR)/mreviewer \
 	adapter-issues $(SKILLS_DIR)/adapter/issues \
 	adapter-wiki $(SKILLS_DIR)/adapter/wiki \
 	adapter-vcs $(SKILLS_DIR)/adapter/vcs

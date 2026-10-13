@@ -1,6 +1,6 @@
 ---
 name: adapter-vcs
-description: 'Триггеры: явный запрос прочитать MR, discussions, review/pipeline state или определить репозиторий по issue либо вызов из `protocol`/`mreviewer`.
+description: 'Триггеры: явный запрос прочитать MR, discussions, review/pipeline state или определить репозиторий по issue либо вызов из `protocol`.
   Адаптер класса vcs-host (продукт — параметр, по умолчанию GitLab); оценка качества кода и проведение ревью принадлежат вызывающему навыку.
   Read-only по умолчанию.'
 ---

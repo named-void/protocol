@@ -69,10 +69,6 @@ def resolve(url: str) -> dict[str, object]:
     try:
         project = skills_config.resolve_vcs_project(host, project_path)
         local_path = Path(project["local_path"]).resolve()
-        rules_paths = [
-            Path(path).resolve()
-            for path in skills_config.profiles_for_path(local_path)
-        ]
     except skills_config.ConfigError as exc:
         raise ResolveError(str(exc)) from exc
     checkout_matches = local_path.is_dir() and origin_matches(
@@ -88,8 +84,6 @@ def resolve(url: str) -> dict[str, object]:
         "local_path": str(local_path),
         "local_exists": local_path.is_dir(),
         "checkout_matches": checkout_matches,
-        "rules_paths": [str(path) for path in rules_paths],
-        "rules_exist": all(path.is_file() for path in rules_paths),
     }
     return output
 
@@ -104,7 +98,7 @@ def main() -> int:
         print(f"resolve-mr: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(output, ensure_ascii=False, indent=2, sort_keys=True))
-    if not output["checkout_matches"] or not output["rules_exist"]:
+    if not output["checkout_matches"]:
         return 3
     return 0
 
