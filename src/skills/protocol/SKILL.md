@@ -63,6 +63,7 @@ Issue tracker в protocol используй только для чтения.
 1. Прочитай карту `upl`: `<projects-root>/upl/project.toml`, где `<projects-root>` выводит `python3 "$PROTOCOL_SRC/lib/skills_config.py" projects-root`.
 2. Выбери `UPL_ROOT`: существующий корень из вывода `python3 "$PROTOCOL_SRC/lib/skills_config.py" roots --project upl`.
 3. Прочитай `$PROTOCOL_SKILL/references/git-lifecycle.md`, технологические профили из `profile_rules` карты для `upl/services` и все файлы каталога `<UPL_ROOT>/templates/templ-service/policy`.
+   Путь вида `profiles/<файл>.md` из `profile_rules` отсчитывай от `$PROTOCOL_SRC`.
    Проектную прозу карты (`./`-пути из её `profile_rules`) на подготовке не читай: её читает сессия задачи, ключ которой начинается с `UPL-`.
 4. Последними прочитай исходники адаптеров: `$PROTOCOL_SRC/skills/adapter/issues/SKILL.md`, `$PROTOCOL_SRC/skills/adapter/vcs/SKILL.md` и `$PROTOCOL_SRC/skills/adapter/wiki/SKILL.md`.
 
