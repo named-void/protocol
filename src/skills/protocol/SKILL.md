@@ -91,24 +91,19 @@ Issue tracker в protocol используй только для чтения.
 
 #### Локальная предмаршрутная инвентаризация после `read-protocol`
 
-После Bootstrap передай исходный полный Jira URL или ключ `UPL-<code>` в `"$PROTOCOL_SKILL/scripts/resolve_issue.py"`.
-  Сохрани из JSON-результата нормализованные `KEY`, `ISSUE_URL` и `project_roots`; для ключа URL формирует resolver из настроенного Jira host.
-  Получи `DATA_ROOT` в каталоге `project_roots[0]`. Ничего не создавай и не меняй.
+После Bootstrap выполни `python3 "$PROTOCOL_SKILL/scripts/inventory.py" '<Jira URL или ключ>'`.
+  Скрипт read-only: разрешает задачу тем же resolver, читает `<DATA_ROOT>/tasks/<KEY>/state.md` и перечень итераций, а в checkout под корнями проекта находит task worktree, локальные и remote-tracking ветки с ключом и состояние их деревьев.
+  Код 2 блокирует маршрут.
 
-В read-only режиме проверь `<DATA_ROOT>/tasks/<KEY>/state.md` и соседние артефакты задачи, включая `status`, `next`, `work_root`, `branch`, `candidate`, `checked_candidate` и перечень итераций.
-В каждом доступном локальном checkout под корнями `project.roots` текущей карты проектов проверь `git worktree list --porcelain`, локальные ветки и remote-tracking refs с ключом задачи.
-  Для текущего checkout и каждого найденного task worktree выполни `git status --short --branch`.
-  Отдельно зафиксируй `clean`, `dirty`, `detached` и наличие незакоммиченных изменений.
-
-Собери для пользователя краткий инвентаризационный результат: найденные `TASK_DIR` и `state.md`, статусы задач, пути worktree, ветки, состояние деревьев, `next` и неоднозначности.
+Покажи пользователю краткий результат: `TASK_DIR`, `status` и `next` из `state.md`, worktree с состоянием дерева (`clean`, число изменений, `detached`), ветки и `reasons`.
   До выбора пользователя не вызывай `adapter-issues` или `adapter-vcs`, не выполняй Branch-Sync, не создавай `state.md` или task worktree и не меняй файлы или Git.
 
-Если найден один продолжаемый `state.md` со статусом `define`, `implement`, `accept` или `blocked`, предложи продолжить ту же задачу с указанными в нём `work_root`, `branch`, `status` и `next`, не создавая новый `TASK_DIR`.
-  Если найден `status: completed`, предложи открыть следующий цикл той же задачи через существующий `state.md`.
-Если найдено несколько кандидатов, отсутствует `state.md` при наличии worktree или состояние дерева не позволяет безопасно продолжить, покажи кандидатов и предложи варианты продолжения или восстановления.
-  До явного выбора пользователя маршрут не продолжай.
+Дальше действуй по полю `route`:
 
-Если локальных артефактов, веток и worktree с этим ключом не найдено, продолжи обычный старт по разделу "С Jira URL" с сохранённым `ISSUE_URL`, включая resolver, чтение issue и последующий выбор checkout.
+- `continue`: предложи продолжить задачу с `work_root`, `branch`, `status` и `next` из `state.md`, не создавая новый `TASK_DIR`;
+- `next-cycle`: предложи открыть следующий цикл задачи через существующий `state.md`;
+- `ambiguous`: покажи кандидатов и `reasons` и предложи варианты продолжения или восстановления; до явного выбора пользователя маршрут не продолжай;
+- `new`: продолжи обычный старт по разделу "С Jira URL" с `url` из результата, включая resolver, чтение issue и выбор checkout.
 
 #### MR URL после `read-protocol`
 
@@ -251,8 +246,8 @@ task_key_from_worktree
 Работа идёт итерациями двух видов; каждая итерация - каталог в `TASK_DIR` со сквозной нумерацией, которая не сбрасывается между циклами:
 
 - `implementation-<N>/`: итерация реализации. Содержит `notes.md` с решениями, обоснованиями и событиями, сохранённые выводы прогонов `*.log` и копии обязательных evidence-файлов вне Git.
-- `review-<M>/`: итерация независимой проверки. Для каждого режима `requirements`, `technical` и `requirements-fix` содержит отдельные `<режим>/progress` и `<режим>/result`, а в корне итерации - агрегированный `result`.
-  Каждому режиму назначай свой checker-thread и пути `progress` и `result`.
+- `review-<M>/`: итерация независимой проверки. Для каждого режима `requirements`, `technical` и `requirements-fix` содержит отдельные `<режим>/manifest`, `<режим>/progress` и `<режим>/result`, а в корне итерации - агрегированный `result`.
+  Каждому режиму назначай свой checker-thread.
 
 При входе в Define создай первую итерацию `implementation-<N>` текущего цикла и веди в ней `notes.md`; отдельного носителя у Define нет.
 
@@ -407,21 +402,29 @@ High-risk план должен конкретизировать выполне�
 
 ### Immutable вход checker и recovery
 
-Перед созданием любого reviewer атомарно подготовь `<TASK_DIR>/review-<M>/manifest`; он является единственным замороженным входом прохода и не изменяется после запуска reviewer.
+Перед созданием reviewer запечатай для каждого режима `<TASK_DIR>/review-<M>/<режим>/manifest`: это единственный замороженный вход прохода, после запечатывания он не меняется.
 
-Manifest фиксирует режим, репозитории, `BASE`/`CANDIDATE` Git trees, digest правил и evidence и абсолютные пути child- и aggregate-result; для `requirements-fix` после переписывания `BASE` включи `CHECKED_TREE`.
-  Номер review и runtime-состояние в объект манифеста не входят: их отсутствие задаёт структура манифеста, а не сериализация.
+Manifest - JSON-объект со следующими полями:
 
-Для каждого сочетания режима и репозитория вычисли отдельный `input_digest`, чтобы одинаковый результат можно было переиспользовать независимо от других репозиториев:
+- `mode`;
+- `repositories`: запись на репозиторий с `name`, абсолютным `work_root`, `base`, `candidate`, обязательными внешними `evidence` в виде списка `{"path": ...}`, а для `requirements-fix` после переписывания `BASE` также `checked_tree`;
+- `rule_files`: абсолютные пути файлов и каталогов применимых правил в виде списка `{"path": ...}`;
+- абсолютные `progress` и `result` режима;
+- `targets`: непустой список целей, только для `requirements-fix`;
+- mode-specific view по правилам режима.
 
-1. Удали из объекта манифеста ключи `input_digest`, `progress` и `result`.
-2. Сериализуй остаток `json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))` и захешируй UTF-8 SHA-256.
+Номер review, цикл и runtime-состояние в manifest не включай: они меняют `input_digest` и мешают переиспользованию.
 
-Запиши manifest во временный файл в том же каталоге, проверь snapshots, ancestry либо `CHECKED_TREE` по правилу режима, clean worktrees, правила и evidence, затем атомарно переименуй его и только после этого запиши его путь в `state.md`.
-  При несовпадении входов не запускай reviewer и не меняй `checked_candidate`: сдвиг snapshot возвращает задачу в `implement`, повреждённый manifest, evidence или result - в `accept` или `blocked` с причиной и `next`.
+Запиши черновик manifest и запечатай его: `python3 "$PROTOCOL_SKILL/../checker/scripts/review_manifest.py" seal <черновик> <TASK_DIR>/review-<M>/<режим>/manifest`.
+  Скрипт разрешает полные SHA и trees, проверяет `HEAD == candidate`, чистоту дерева, ancestry либо `checked_tree`, считает SHA-256 evidence и правил и `input_digest`, атомарно пишет manifest и отказывает, если файл уже есть.
 
-Переиспользуй только завершённый child-result с тем же `input_digest`, подтверждёнными final snapshot и SHA-256 evidence.
-  При recovery собери aggregate-result из таких child-result и выполни protocol-gate без reviewer, если aggregate-result отсутствует; запускай reviewer только для отсутствующих или изменившихся режимов и репозиториев.
+- Код 0: запиши путь manifest в `state.md`.
+- Код 3 (`stale`): не запускай reviewer и не меняй `checked_candidate`. По `reasons` сдвиг snapshot возвращает задачу в `implement`, отсутствующий или изменённый evidence - в `accept` или `blocked` с причиной и `next`.
+- Код 2 (`blocked`): черновик повреждён или manifest уже существует; установи `accept` или `blocked` с причиной и `next`.
+
+Переиспользуй только завершённый child-result, чей manifest проходит `review_manifest.py verify <manifest>` с кодом 0.
+  В новой итерации `review-<M>` дополнительно сверь его `input_digest` с `input_digest` запечатанного manifest того же режима.
+  При recovery собери aggregate-result из таких child-result и выполни protocol-gate без reviewer, если aggregate-result отсутствует; запускай reviewer только для отсутствующих или изменившихся режимов.
   Для принятых открытых целей запускай только `requirements-fix` с `checked_candidate`, а не полный `requirements`/`technical`.
 
 До открытия нового цикла проверь, что `status: completed` подтверждён принятым aggregate-result, завершёнными checker и protocol-gate, Git-финализацией, evidence и QA-комментарием.
@@ -437,12 +440,13 @@ Manifest фиксирует режим, репозитории, `BASE`/`CANDIDAT
    - если лимит исчерпан, установи `blocked`, запиши в `state.md` перечень нерешённых блокеров или неподтверждённых устранений и первое действие в `next`, затем останови маршрут;
    - иначе перейди к шагу 3.
 3. Заведи следующую итерацию `review-<M>`.
-4. Назначь пути `progress` и `result` для режимов и aggregate-result; включи их в manifest, атомарно проверь его до reviewer и передай только путь manifest, `input_digest`, режим и `result`.
-5. Собери в manifest mode-specific входы по правилам режимов; для `requirements-fix` используй `BASE = checked_candidate`, только принятые открытые цели и, если `BASE` уже не предок `CANDIDATE`, `CHECKED_TREE = BASE^{tree}`.
+4. Назначь пути `progress` и `result` режимов и aggregate-result `review-<M>/result`.
+5. Собери черновик manifest каждого режима с mode-specific входами; для `requirements-fix` используй `BASE = checked_candidate`, только принятые открытые цели и, если `BASE` уже не предок `CANDIDATE`, `checked_tree = BASE^{tree}`.
 6. Перед новым проходом подтверди обязательные проверки и evidence текущего clean candidate; при изменении дерева верни задачу в `implement` и повтори затронутые проверки.
-7. Запусти недостающие режимы и репозитории: первичные `requirements`/`technical` одновременно, `requirements-fix` отдельно.
-8. Дождись запущенных thread, прочитай result и собери aggregate-result и protocol-gate из полного набора; отсутствие только aggregate-result не запускает reviewer.
-9. При `stale`, несовпадении manifest, отсутствии result, `failed` или `blocked` не обновляй `checked_candidate`; сдвиг snapshot верни в `implement`, остальные причины запиши как `blocked` с первым действием в `next`.
+7. Запечатай manifest каждого режима по разделу "Immutable вход checker и recovery" и передай reviewer только путь manifest, `input_digest`, режим и `result`.
+8. Запусти недостающие режимы: первичные `requirements`/`technical` одновременно, `requirements-fix` отдельно.
+9. Дождись запущенных thread, прочитай result и собери aggregate-result и protocol-gate из полного набора; отсутствие только aggregate-result не запускает reviewer.
+10. При `stale`, несовпадении manifest, отсутствии result, `failed` или `blocked` не обновляй `checked_candidate`; сдвиг snapshot верни в `implement`, остальные причины запиши как `blocked` с первым действием в `next`.
 
 Выполни общий protocol-gate после получения всех обязательных результатов:
 
@@ -495,6 +499,7 @@ Manifest фиксирует режим, репозитории, `BASE`/`CANDIDAT
 
 После успешной Git-финализации собери комментарий для QA по разделу "Комментарий для QA" и покажи его пользователю.
   Повторно сверь manifest, aggregate-result, все обязательные child-result, Git, snapshots и evidence и только после этого атомарно установи `status: completed` и очисти `next`.
+  Manifest здесь сверяй командой `review_manifest.py verify --integrity <manifest> --digest <input_digest из state.md>`: финализация меняет SHA `candidate`, а snapshots сверяет раздел "Результат" `git-lifecycle.md`.
   При любой несогласованности сохрани `accept` или `blocked` с причиной и первым действием в `next`.
   Новый reviewer из-за этого не запускай.
 

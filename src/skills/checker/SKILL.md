@@ -16,23 +16,17 @@ description: 'Триггеры: явный запрос read-only проверк
 
 ## Общий вход
 
-В protocol-workflow получи от основного или рабочего thread абсолютный manifest с режимом `requirements`, `technical` или `requirements-fix`, списком `repositories` с отдельной записью для каждого репозитория и соответствующим `input_digest`.
-Если `mode` отсутствует или имеет неизвестное значение, верни `blocked`.
+В protocol-workflow получи от основного или рабочего thread абсолютный путь manifest одного режима (`requirements`, `technical` или `requirements-fix`) и его `input_digest`.
+  Состав manifest задаёт protocol (раздел "Immutable вход checker и recovery"); mode-specific view правил и обязательных артефактов приходит только через manifest.
 
-В каждой записи укажи абсолютные `WORK_ROOT`, `BASE`, `CANDIDATE` и обязательные внешние evidence-файлы; для каждого evidence-файла вне Git получи путь и SHA-256.
-В режиме `requirements-fix` вместо требования commit-ancestry можно указать `CHECKED_TREE` — полный SHA Git tree последнего проверенного снимка.
+До чтения diff выполни `python3 <каталог этого SKILL.md>/scripts/review_manifest.py verify <manifest> --digest <input_digest>`.
+  Скрипт пересчитывает `input_digest`, сверяет коммиты и trees каждой записи `repositories`, `HEAD == CANDIDATE`, чистоту worktree, ancestry `BASE` → `CANDIDATE` либо `BASE^{tree}` с `checked_tree` и SHA-256 evidence и правил.
 
-Передай mode-specific view правил и обязательных артефактов через manifest и назначь ему абсолютные пути `progress` и `result`; не дублируй этот контекст отдельными mutable-входами.
+- Код 0: продолжай проверку.
+- Код 3: верни `stale` без содержательного аудита.
+- Код 2: manifest отсутствует, повреждён или неполон; верни `blocked` без findings.
 
-До чтения diff проверь `input_digest`: пересчитай SHA-256 canonical JSON объекта манифеста без ключей `input_digest`, `progress` и `result` и сверь с переданным значением.
-  Формула сериализации - `json.dumps(obj, sort_keys=True, ensure_ascii=False, separators=(",", ":"))`.
-  Затем убедись, что `BASE` и `CANDIDATE` в каждой записи `repositories` разрешаются в зафиксированные коммиты, Git trees и `HEAD` совпадают с manifest, а worktree clean.
-Для полного прохода проверь также, что `BASE` является предком `CANDIDATE`.
-В `requirements-fix` при переданном `CHECKED_TREE` вместо ancestry сверь `BASE^{tree}` с `CHECKED_TREE`. Проверяй каждый версионируемый результат по Git-объекту `CANDIDATE`, не переключая ветку.
-
-Сверь внешние SHA-256 до проверки и перед записью результата; повторная сверка должна совпадать с manifest.
-
-Несовпадение digest, snapshot, ancestry или `CHECKED_TREE`, dirty worktree либо evidence возвращает `stale` без содержательного аудита; отсутствующий, повреждённый или неполный manifest либо критерий возвращает `blocked` без findings.
+Если в manifest нет критериев режима, верни `blocked` без findings. Проверяй каждый версионируемый результат по Git-объекту `CANDIDATE`, не переключая ветку.
 
 ## Режимы проверки
 
@@ -146,7 +140,7 @@ description: 'Триггеры: явный запрос read-only проверк
 
 При остановке вызывающий thread фиксирует `blocked` и причину в маршруте; `result` записывает только reviewer.
 
-Перед записью результата повторно сверь manifest, snapshots всех репозиториев и SHA-256 evidence; несовпадение не даёт содержательного `completed` и возвращает `stale` или `blocked`.
+Перед записью результата повтори `review_manifest.py verify`; код 3 не даёт содержательного `completed` и возвращает `stale`, код 2 - `blocked`.
 После собственной записи `reviewer` устанавливает этап `done` и сообщает рабочему thread только состояние завершения и путь `result`, не дублируя содержимое.
 
 Рабочий thread проверяет читаемость `result` и возвращает основному потоку только состояние и путь; ошибка записи reviewer или чтения рабочим thread возвращает `blocked`.
