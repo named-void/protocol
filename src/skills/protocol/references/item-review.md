@@ -93,14 +93,11 @@
    - иначе выполни `git -C <local_path> fetch origin refs/merge-requests/<iid>/head` и `git -C <local_path> worktree add --detach <local_path>-mr<iid> <CANDIDATE>`.
 5. Получи профили командой `python3 "$PROTOCOL_SRC/lib/skills_config.py" profiles --path <local_path>` и передай их в `rule_files`. Policy шаблона (`--policies`) не передавай.
 6. Собери manifest режима `technical` по разделу "Manifest" `accept.md` с `work_root` временного worktree, запечатай его в `review-<M>/technical/manifest` и запусти reviewer.
-7. Отбери кандидатов по разделу "Protocol-gate" `accept.md`. Scope и реестра нет: вместо дедупликации по реестру исключи уже опубликованные в discussions замечания без нового доказательства.
+7. Отбери кандидатов по разделу "Protocol-gate" `accept.md`; ключ задачи для сверки с открытыми MR бери из source-ветки или заголовка ревьюимого MR.
+   Scope и реестра нет: вместо дедупликации по реестру исключи уже опубликованные в discussions замечания без нового доказательства.
    Итог отбора запиши в `review-<M>/result`.
 8. Удали worktree, созданный на шаге 4, командой `git -C <local_path> worktree remove <local_path>-mr<iid>`, в том числе после `stale` или `blocked`.
 9. Выдай подтверждённые findings нумерованным списком по убыванию severity: confidence, `path:line`, проблема, доказательство, последствие, правило и направление исправления.
-   Finding, опирающийся на состояние смежного репозитория, перед выдачей сверь с открытыми MR этого репозитория: через `adapter-vcs` найди там MR, у которых ключ задачи из source-ветки или заголовка ревьюимого MR входит в title или source_branch.
-   Найденные MR перечисли в finding.
-   Совпадение ключа само по себе дефект не устраняет: прочитай diff параллельного MR и проверь, устраняет ли он конкретный дефект.
-   Подтверждённое устранение фиксируй в finding зависимостью от влития параллельного MR, а не снятием finding.
    При чистом результате напиши `findings нет`; открытые вопросы перечисли отдельно.
 
 Публикация findings в MR - отдельный маршрут по команде `/external-write vcs <действие> <цель>`.
