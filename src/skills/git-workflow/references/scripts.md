@@ -40,8 +40,8 @@
 ## `remove-task-worktree.sh list [<tasks-dir>]`
 
 Печатает по строке на каждое зарегистрированное task worktree этого репозитория: `<KEY> <clean|dirty|stash> <merged|unmerged|unknown> <path>`.
-Второе поле — состояние дерева, третье — влита ли его ветка в базовую ветку проекта.
-С каталогом задач `<DATA_ROOT>/tasks` печатает только деревья, у которых `<tasks-dir>/<KEY>/state.md` содержит `status: completed` и не менялся не менее 4 часов.
+Второе поле - состояние дерева, третье - влита ли его ветка в базовую ветку проекта.
+С `<tasks-dir>`, то есть `<DATA_ROOT>/tasks`, печатает только деревья, чей `<tasks-dir>/<KEY>/state.md` содержит `status: completed` и не менялся не менее 4 часов.
 
 ## `remove-task-worktree.sh remove <KEY> <archive-dir> [<sha256>:<path> …]`
 
