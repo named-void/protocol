@@ -62,7 +62,7 @@ Issue tracker в protocol используй только для чтения.
 
 1. Прочитай карту `upl`: `<projects-root>/upl/project.toml`, где `<projects-root>` выводит `python3 "$PROTOCOL_SRC/lib/skills_config.py" projects-root`.
 2. Выбери `UPL_ROOT`: существующий корень из вывода `python3 "$PROTOCOL_SRC/lib/skills_config.py" roots --project upl`.
-3. Прочитай `$PROTOCOL_SKILL/references/git-lifecycle.md`, технологические профили из `profile_rules` карты для `upl/services` и все файлы каталога `<UPL_ROOT>/templates/templ-service/policy`.
+3. Прочитай `$PROTOCOL_SKILL/references/git-lifecycle.md`, технологические профили из `profile_rules` карты для `upl/services` и все policy из её `policies`, отсчитывая их путь от `UPL_ROOT`.
    Путь вида `profiles/<файл>.md` из `profile_rules` отсчитывай от `$PROTOCOL_SRC`.
    Проектную прозу карты (`./`-пути из её `profile_rules`) на подготовке не читай: её читает сессия задачи, ключ которой начинается с `UPL-`.
 4. Последними прочитай исходники адаптеров: `$PROTOCOL_SRC/skills/adapter/issues/SKILL.md`, `$PROTOCOL_SRC/skills/adapter/vcs/SKILL.md` и `$PROTOCOL_SRC/skills/adapter/wiki/SKILL.md`.
@@ -154,16 +154,17 @@ task_key_from_worktree
 
 1. Прочитай `$PROTOCOL_SKILL/references/git-lifecycle.md`, выполни Branch-Sync и продолжай только в полученном `WORK_ROOT`.
    Репозиторий, добавленный в scope позже, проходит Branch-Sync тогда же по правилам того же файла.
-2. Разреши проект и применимые профили:
+2. Разреши проект, применимые профили и policy шаблона:
 
    ```bash
    python3 "$PROTOCOL_SRC/lib/skills_config.py" project --path "$WORK_ROOT"
    python3 "$PROTOCOL_SRC/lib/skills_config.py" profiles --path "$WORK_ROOT"
+   python3 "$PROTOCOL_SRC/lib/skills_config.py" profiles --path "$WORK_ROOT" --policies
    ```
 
-   Полностью прочитай каждый возвращённый профиль до Define, а в цикле, где Define заменён подтверждённым выбором тредов MR, до первой правки в `WORK_ROOT`.
-   Ответ `- outside` означает отсутствие проектных профилей. Ошибка команды, отсутствующий или нечитаемый профиль блокирует маршрут.
-   Явно названные профилем обязательные policy-файлы прочитай до действия, которое от них зависит; не обходи остальные каталоги проекта.
+   Полностью прочитай каждый возвращённый профиль и policy до Define, а в цикле, где Define заменён подтверждённым выбором тредов MR, до первой правки в `WORK_ROOT`.
+   Ответ `- outside` означает отсутствие проектных профилей. Ошибка команды, отсутствующий или нечитаемый профиль либо policy блокирует маршрут.
+   Не обходи остальные каталоги проекта.
 3. Используй `<DATA_ROOT>/tasks/<task>/` как `TASK_DIR`, получив `DATA_ROOT` с `--path "$WORK_ROOT"`. Отсутствующие каталог и `state.md` создай после Branch-Sync и до Define.
 4. Убери деревья завершённых задач этого репозитория по разделу "Уборка деревьев" `git-lifecycle.md`.
    Шаг стоит здесь: скрипту уборки нужен `<DATA_ROOT>/tasks`.

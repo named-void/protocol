@@ -67,7 +67,9 @@ key_prefix_map = { UPL = "getblogger/upl" }
 
 # Профили, подключаемые к работе. Путь вида `profiles/<файл>.md` — от корня
 # репозитория правил (технологические профили); путь с `./` — от каталога
-# этой карты (проектная проза).
+# этой карты (проектная проза). `policies` — policy шаблона от первого корня
+# проекта: их подключает сценарий (цикл задачи), а ревью MR без задачи нет —
+# их проверяет tech-review.
 [[profile_rules]]
 match = "path:/upl/services/"
 profiles = [
@@ -76,6 +78,7 @@ profiles = [
     "profiles/postgresql.md",
     "profiles/http-api.md",
 ]
+policies = ["templates/templ-service/policy"]
 
 # Go-библиотеки инфраструктуры (напр. httperrors): без профиля upl-services и
 # postgresql, но с общим Go-профилем и http-api для http-ориентированных либ.

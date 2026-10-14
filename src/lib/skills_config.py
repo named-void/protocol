@@ -869,8 +869,11 @@ def cmd_allocate_task_key(args: list[str]) -> int:
     return 0
 
 
-def profiles_for_path(path: str | os.PathLike[str] | None = None) -> list[Path]:
-    """Return applicable project and technology profiles for a target path."""
+def profiles_for_path(
+    path: str | os.PathLike[str] | None = None, key: str = "profiles"
+) -> list[Path]:
+    """Return applicable profiles (`key="profiles"`) or template policies
+    (`key="policies"`) of the matching `profile_rules` for a target path."""
     raw_target = Path(path).expanduser() if path else Path.cwd()
     targets = {str(raw_target), str(raw_target.resolve())}
     name, _ = identify_project(path, None)
@@ -882,6 +885,7 @@ def profiles_for_path(path: str | os.PathLike[str] | None = None) -> list[Path]:
         raise ConfigError(f"{project_config_path(name)}: profile_rules must be a list")
     project_dir = projects_root() / name
     repo_root = Path(__file__).resolve().parents[1]
+    roots = project_roots(name) if key == "policies" else []
     seen: set[str] = set()
     result: list[Path] = []
     for rule in rules:
@@ -898,15 +902,20 @@ def profiles_for_path(path: str | os.PathLike[str] | None = None) -> list[Path]:
         fragment = match[len("path:"):]
         if fragment and not any(fragment in candidate for candidate in targets):
             continue
-        entries = rule.get("profiles") or []
+        entries = rule.get(key) or []
         if isinstance(entries, str) or not isinstance(entries, list):
-            raise ConfigError(f"{project_config_path(name)}: profiles must be a list of paths")
+            raise ConfigError(f"{project_config_path(name)}: {key} must be a list of paths")
         for entry in entries:
             raw = str(entry).strip()
             if not raw:
                 continue
-            base = project_dir if raw.startswith("./") else repo_root
-            resolved = str((base / raw).resolve())
+            if key == "policies":
+                if not roots:
+                    raise ConfigError(f"{project_config_path(name)}: policies need project.roots")
+                resolved = str((roots[0] / Path(raw).expanduser()).resolve())
+            else:
+                base = project_dir if raw.startswith("./") else repo_root
+                resolved = str((base / raw).resolve())
             if resolved in seen:
                 continue
             seen.add(resolved)
@@ -916,7 +925,8 @@ def profiles_for_path(path: str | os.PathLike[str] | None = None) -> list[Path]:
 
 def cmd_profiles(args: list[str]) -> int:
     """Применимые документы профилей для целевого пути — по строке на путь,
-    в порядке их объявления в карте проекта.
+    в порядке их объявления в карте проекта; с `--policies` — policy шаблона
+    тех же правил.
 
     Резолв `profile_rules` (orchestration/adr/README.md#project-layer) один для
     всех потребителей: оркестратор читает профили сам, манифест участника
@@ -926,10 +936,13 @@ def cmd_profiles(args: list[str]) -> int:
     `/private/var`, и карта проекта записана по одному из двух). Пустой
     `match` применяется всегда, `match` неизвестного вида — не применяется, но
     называется в stderr. `./<имя>` резолвится от каталога карты проекта,
-    `profiles/<имя>` — от корня репозитория навыков. Вне проекта вывод пуст.
+    `profiles/<имя>` — от корня репозитория навыков, путь из `policies` — от
+    первого корня проекта. Policy отдаются отдельно: сценарий решает, входят ли
+    они в набор правил. Вне проекта вывод пуст.
     """
-    usage = "usage: skills_config.py profiles [--path <dir>]"
+    usage = "usage: skills_config.py profiles [--path <dir>] [--policies]"
     path: str | None = None
+    key = "profiles"
     i = 0
     while i < len(args):
         if args[i] == "--path":
@@ -938,12 +951,14 @@ def cmd_profiles(args: list[str]) -> int:
                 return 2
             path = args[i + 1]
             i += 1
+        elif args[i] == "--policies":
+            key = "policies"
         else:
             print(f"error: unexpected argument '{args[i]}'\n{usage}", file=sys.stderr)
             return 2
         i += 1
     try:
-        for profile in profiles_for_path(path):
+        for profile in profiles_for_path(path, key):
             print(profile)
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -974,7 +989,7 @@ def main(argv: list[str]) -> int:
     print(
         "usage: skills_config.py get <dotted.key> [--default X] [--json]"
         " | validate | export-env"
-        " | project [--path <dir>] | profiles [--path <dir>]"
+        " | project [--path <dir>] | profiles [--path <dir>] [--policies]"
         " | projects-root | data-root (--path <dir> | --project <name>)"
         " | allocate-task-key <base> [--path <dir>]"
         " | roots [--project <name>]",

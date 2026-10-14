@@ -91,8 +91,7 @@
 4. Подготовь снимок, не меняя ветки и рабочее дерево `local_path`:
    - если каталог `<local_path>-mr<iid>` уже существует, остановись и назови его пользователю: принадлежность каталога этому ревью не доказана, поэтому не удаляй и не переиспользуй его;
    - иначе выполни `git -C <local_path> fetch origin refs/merge-requests/<iid>/head` и `git -C <local_path> worktree add --detach <local_path>-mr<iid> <CANDIDATE>`.
-5. Получи профили командой `python3 "$PROTOCOL_SRC/lib/skills_config.py" profiles --path <local_path>`. Передай их в `rule_files`.
-   В `excluded_rules` передай policy-файлы и каталоги, которые профили требуют загрузить как policy шаблона (для upl - `<UPL_ROOT>/templates/templ-service/policy`).
+5. Получи профили командой `python3 "$PROTOCOL_SRC/lib/skills_config.py" profiles --path <local_path>` и передай их в `rule_files`. Policy шаблона (`--policies`) не передавай.
 6. Собери manifest режима `technical` по разделу "Manifest" `accept.md` с `work_root` временного worktree, запечатай его в `review-<M>/technical/manifest` и запусти reviewer.
 7. Отбери кандидатов по разделу "Protocol-gate" `accept.md`. Scope и реестра нет: вместо дедупликации по реестру исключи уже опубликованные в discussions замечания без нового доказательства.
    Итог отбора запиши в `review-<M>/result`.

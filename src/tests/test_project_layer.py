@@ -438,6 +438,27 @@ class ProjectLayerTest(unittest.TestCase):
             result.stdout.split(),
         )
 
+    def test_policies_resolve_from_project_root_and_stay_out_of_profiles(self) -> None:
+        """Policy шаблона отдаются только по `--policies`: ревью MR без задачи
+        берёт `profiles` и не должно получить policy."""
+        self.write_profile_rules(
+            "[[profile_rules]]\n"
+            f'match = "path:{self.work}"\n'
+            'profiles = ["profiles/go.md"]\n'
+            'policies = ["templates/tpl/policy"]\n'
+        )
+
+        profiles = self.run_cli("profiles", "--path", str(self.work))
+        policies = self.run_cli("profiles", "--path", str(self.work), "--policies")
+
+        self.assertEqual(0, profiles.returncode, profiles.stderr)
+        self.assertEqual([str(ROOT / "profiles" / "go.md")], profiles.stdout.split())
+        self.assertEqual(0, policies.returncode, policies.stderr)
+        self.assertEqual(
+            [str((self.work / "templates" / "tpl" / "policy").resolve())],
+            policies.stdout.split(),
+        )
+
     def test_profiles_skips_a_rule_whose_fragment_is_elsewhere(self) -> None:
         self.write_profile_rules(
             "[[profile_rules]]\n"

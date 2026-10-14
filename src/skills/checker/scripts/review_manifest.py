@@ -116,7 +116,6 @@ def validate(manifest: Any, *, sealed: bool) -> dict[str, Any]:
             raise Blocked(f"{field}.checked_tree: allowed only in requirements-fix")
         _files(repository, "evidence", f"{field}.", sealed=sealed, hashed=True)
     _files(manifest, "rule_files", "", sealed=sealed, hashed=False)
-    _files(manifest, "excluded_rules", "", sealed=sealed, hashed=False)
     _files(manifest, "sources", "", sealed=sealed, hashed=True)
     if sealed and not isinstance(manifest.get("input_digest"), str):
         raise Blocked("input_digest missing")
