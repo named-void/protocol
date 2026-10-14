@@ -4,6 +4,7 @@ import hashlib
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -452,6 +453,38 @@ class RemoveTaskWorktreeTest(GitScriptTest):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn(f"UPL-45 clean merged {merged}", result.stdout)
         self.assertIn(f"UPL-46 clean unmerged {unmerged}", result.stdout)
+
+    def test_list_with_tasks_dir_prints_only_retirable_trees(self) -> None:
+        repository = self.local_repository()
+        tasks = self.root / "tasks"
+        stale_time = time.time() - 5 * 3600
+        trees = {}
+        for key, status, aged in (
+            ("UPL-50", "completed", True),
+            ("UPL-51", "completed", False),
+            ("UPL-52", "implement", True),
+            ("UPL-53", None, True),
+        ):
+            trees[key] = self.task_worktree(repository, key)
+            if status is None:
+                continue
+            state = tasks / key / "state.md"
+            state.parent.mkdir(parents=True)
+            state.write_text(f"# {key}\n\n- status: {status}\n", encoding="utf-8")
+            if aged:
+                os.utime(state, (stale_time, stale_time))
+
+        result = subprocess.run(
+            [str(REMOVE_SCRIPT), "list", str(tasks)],
+            cwd=repository,
+            env=os.environ.copy(),
+            check=False,
+            text=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual([f"UPL-50 clean merged {trees['UPL-50']}"], result.stdout.splitlines())
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,7 +8,7 @@
 # `refs/heads/<type>/<KEY>` keeps the result until a human deletes it.
 #
 # Usage:
-#   remove-task-worktree.sh list
+#   remove-task-worktree.sh list [<tasks-dir>]
 #   remove-task-worktree.sh remove <KEY> <archive-dir> [<sha256>:<path-in-worktree> ...]
 #
 # Exit codes:
@@ -39,7 +39,7 @@ fi
 source "${_git_remove_self%/*}/lib-git.sh"
 
 usage() {
-  echo "usage: remove-task-worktree.sh list" >&2
+  echo "usage: remove-task-worktree.sh list [<tasks-dir>]" >&2
   echo "       remove-task-worktree.sh remove <KEY> <archive-dir> [<sha256>:<path> ...]" >&2
   exit 64
 }
@@ -123,11 +123,24 @@ main_repo_root="${git_common_dir%/*}"
 main_repo_name="${main_repo_root##*/}"
 invoked_root="$(git rev-parse --show-toplevel)"
 
+# Готово к уборке дерево задачи, чей `state.md` содержит `status: completed` и не
+# менялся не менее 4 часов: свежий mtime означает живую или недавнюю чужую сессию.
+task_is_retirable() {
+  local state_file="$1" status
+  [[ -f "$state_file" ]] || return 1
+  status="$(awk '/^(- )?status:/ { sub(/^(- )?status:[[:space:]]*/, ""); print $1; exit }' "$state_file")"
+  [[ "$status" == completed ]] || return 1
+  [[ -z "$(find "$state_file" -mmin -240)" ]]
+}
+
 # Печатает по строке на зарегистрированное task worktree этого репозитория:
-# `<KEY> <clean|dirty|stash> <merged|unmerged|unknown> <path>`. Статус задачи
-# скрипт не знает — кандидата на уборку выбирает вызывающая сторона по `state.md`.
+# `<KEY> <clean|dirty|stash> <merged|unmerged|unknown> <path>`. С каталогом задач
+# `<DATA_ROOT>/tasks` печатает только деревья, готовые к уборке по `task_is_retirable`.
 cmd_list() {
-  [[ $# -eq 0 ]] || usage
+  [[ $# -le 1 ]] || usage
+  local tasks_dir="${1:-}"
+  [[ -z "$tasks_dir" || -d "$tasks_dir" ]] \
+    || fail 64 "error: tasks directory '$tasks_dir' does not exist"
 
   local path="" name key state merged branch line
   while IFS= read -r line; do
@@ -141,6 +154,9 @@ cmd_list() {
     name="${path##*/}"
     [[ "$name" == "$main_repo_name-"* ]] || continue
     key="${name#"$main_repo_name"-}"
+    if [[ -n "$tasks_dir" ]]; then
+      task_is_retirable "$tasks_dir/$key/state.md" || continue
+    fi
 
     branch="$(branch_of_worktree "$path" || true)"
     state=clean
