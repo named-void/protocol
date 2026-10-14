@@ -30,6 +30,7 @@ CONTINUABLE = ("define", "implement", "accept", "blocked")
 STATE_FIELDS = ("status", "task", "next", "cycle", "kind", "mr", "origin", "spawned")
 REPO_FIELDS = ("work_root", "branch", "isolation", "base", "candidate", "checked_candidate", "checked_tree")
 SCAN_DEPTH = 3
+SHA = re.compile(r"[0-9a-f]{7,40}")
 SKIPPED_DIRS = {"node_modules", "vendor", ".git"}
 
 
@@ -46,28 +47,39 @@ def git_lines(repository: Path, *arguments: str) -> list[str]:
 
 
 def parse_state(path: Path) -> dict[str, Any]:
-    """Fields of the `## Состояние` part: top-level `- key: value` and `### repo: <name>` blocks."""
+    """Fields of the `## Состояние` part: top-level `- key: value` and `### repo: <name>` or `### <name>` blocks.
+
+    A block is one repository only when it has `work_root` and repeats no field; other blocks are prose.
+    """
     state: dict[str, Any] = {"repositories": {}}
+    blocks: dict[str, dict[str, str]] = {}
+    listed: set[str] = set()
     section = None
-    repository: dict[str, str] | None = None
+    block: str | None = None
     for line in path.read_text(encoding="utf-8").splitlines():
         if line.startswith("## "):
             section = line[3:].strip()
-            repository = None
+            block = None
             continue
         if section != "Состояние":
             continue
-        if line.startswith("### repo:"):
-            repository = state["repositories"].setdefault(line.split(":", 1)[1].strip(), {})
+        if line.startswith("### "):
+            block = line[4:].removeprefix("repo:").strip()
+            blocks.setdefault(block, {})
             continue
         match = re.match(r"- ([a-z_]+):\s*(.*)$", line)
         if not match:
             continue
         name, value = match.groups()
-        if repository is not None and name in REPO_FIELDS:
-            repository[name] = value
-        elif repository is None and name in STATE_FIELDS:
+        if block is not None and name in REPO_FIELDS:
+            if name in blocks[block]:
+                listed.add(block)
+            blocks[block][name] = value
+        elif block is None and name in STATE_FIELDS:
             state[name] = value
+    state["repositories"] = {
+        name: fields for name, fields in blocks.items() if "work_root" in fields and name not in listed
+    }
     return state
 
 
@@ -114,6 +126,22 @@ def tree_state(path: Path) -> dict[str, Any]:
     }
 
 
+def checked_snapshot_reasons(name: str, work_root: Path, repository: dict[str, str]) -> list[str]:
+    """`checked_candidate` may be rewritten hash-only, so its tree, not its SHA, must equal `checked_tree`."""
+    candidate = (repository.get("checked_candidate") or "").split(" ", 1)[0]
+    if not SHA.fullmatch(candidate):
+        return []
+    checked_tree = (repository.get("checked_tree") or "").split(" ", 1)[0]
+    if not SHA.fullmatch(checked_tree):
+        return [f"{name}: checked_candidate {candidate} has no checked_tree"]
+    tree = git_lines(work_root, "rev-parse", f"{candidate}^{{tree}}")
+    if not tree:
+        return [f"{name}: checked_candidate {candidate} does not resolve in {work_root}"]
+    if not tree[0].startswith(checked_tree):
+        return [f"{name}: tree of checked_candidate {candidate} differs from checked_tree {checked_tree}"]
+    return []
+
+
 def worktrees(repository: Path) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     for line in git_lines(repository, "worktree", "list", "--porcelain"):
@@ -155,6 +183,7 @@ def propose(state: dict[str, Any] | None, found: list[dict[str, Any]]) -> tuple[
     if status not in CONTINUABLE:
         return "ambiguous", [f"unknown status '{status}'"]
     reasons: list[str] = []
+    notes: list[str] = []
     for name, repository in state["repositories"].items():
         work_root = repository.get("work_root")
         tree = tree_state(Path(work_root)) if work_root else {"available": False}
@@ -162,7 +191,9 @@ def propose(state: dict[str, Any] | None, found: list[dict[str, Any]]) -> tuple[
             reasons.append(f"{name}: work_root {work_root} is not an available git tree")
         elif tree["detached"]:
             reasons.append(f"{name}: work_root {work_root} is detached")
-    return ("ambiguous", reasons) if reasons else ("continue", [])
+        else:
+            notes.extend(checked_snapshot_reasons(name, Path(work_root), repository))
+    return ("ambiguous", reasons + notes) if reasons else ("continue", notes)
 
 
 def inventory(value: str) -> dict[str, Any]:

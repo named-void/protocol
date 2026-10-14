@@ -42,12 +42,13 @@ class ProtocolInventoryTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
 
-    def write_state(self, key: str, status: str) -> None:
+    def write_state(self, key: str, status: str, repository_fields: str = "") -> None:
         task_dir = self.tasks / key
-        (task_dir / "implementation-1").mkdir(parents=True)
+        (task_dir / "implementation-1").mkdir(parents=True, exist_ok=True)
         (task_dir / "state.md").write_text(
             f"# {key}\n\n## Состояние\n\n- status: {status}\n- next: проверить\n\n"
-            f"### repo: svc\n\n- work_root: {self.worktree}\n- branch: feature/{key}\n\n## Findings\n\n- status: ignored\n",
+            f"### repo: svc\n\n- work_root: {self.worktree}\n- branch: feature/{key}\n{repository_fields}\n"
+            "## Findings\n\n- status: ignored\n",
             encoding="utf-8",
         )
 
@@ -94,6 +95,34 @@ class ProtocolInventoryTest(unittest.TestCase):
         output = self.run_inventory("UPL-9")
 
         self.assertEqual(("new", None, []), (output["route"], output["state"], output["repositories"]))
+
+    def test_checked_candidate_is_compared_by_tree_not_sha(self) -> None:
+        def head(*arguments: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(self.worktree), "rev-parse", *arguments], text=True, capture_output=True, check=True
+            ).stdout.strip()
+
+        def commit(*arguments: str) -> None:
+            git(self.worktree, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-q", *arguments)
+
+        (self.worktree / "a.txt").write_text("a\n", encoding="utf-8")
+        git(self.worktree, "add", "a.txt")
+        commit("-m", "checked")
+        checked_tree = head("HEAD^{tree}")
+        commit("--amend", "-m", "hash-only rewrite")
+        rewritten = head("HEAD")
+        (self.worktree / "a.txt").write_text("b\n", encoding="utf-8")
+        commit("-am", "unchecked fix")
+        unchecked = head("HEAD")
+
+        def reasons(checked_candidate: str) -> list[str]:
+            self.write_state("UPL-5", "accept", f"- checked_candidate: {checked_candidate}\n- checked_tree: {checked_tree}\n")
+            output = self.run_inventory("UPL-5")
+            self.assertEqual("continue", output["route"])
+            return output["reasons"]
+
+        self.assertEqual([], reasons(rewritten))
+        self.assertIn("differs from checked_tree", reasons(unchecked)[0])
 
 
 if __name__ == "__main__":
