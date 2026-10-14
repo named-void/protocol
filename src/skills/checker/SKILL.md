@@ -17,7 +17,7 @@ description: 'Триггеры: явный запрос read-only проверк
 ## Общий вход
 
 В protocol-workflow получи от основного или рабочего thread абсолютный путь manifest одного режима (`requirements`, `technical` или `requirements-fix`) и его `input_digest`.
-  Состав manifest задаёт protocol (`references/checker-run.md`, раздел "Manifest"); mode-specific view правил и обязательных артефактов приходит только через manifest.
+  Состав manifest задаёт protocol (`references/accept.md`, раздел "Manifest"); mode-specific view правил и обязательных артефактов приходит только через manifest.
 
 До чтения diff выполни `python3 <каталог этого SKILL.md>/scripts/review_manifest.py verify <manifest> --digest <input_digest>`.
   Скрипт пересчитывает `input_digest`, сверяет коммиты и trees каждой записи `repositories`, `HEAD == CANDIDATE`, чистоту worktree, ancestry `BASE` → `CANDIDATE` либо `BASE^{tree}` с `checked_tree` и SHA-256 evidence и `sources`.
