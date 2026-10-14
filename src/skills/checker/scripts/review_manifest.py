@@ -116,6 +116,7 @@ def validate(manifest: Any, *, sealed: bool) -> dict[str, Any]:
             raise Blocked(f"{field}.checked_tree: allowed only in requirements-fix")
         _files(repository, "evidence", f"{field}.", sealed=sealed, hashed=True)
     _files(manifest, "rule_files", "", sealed=sealed, hashed=False)
+    _files(manifest, "sources", "", sealed=sealed, hashed=True)
     if sealed and not isinstance(manifest.get("input_digest"), str):
         raise Blocked("input_digest missing")
     return manifest
@@ -181,6 +182,7 @@ def check_inputs(manifest: dict[str, Any], *, pin: bool, snapshots: bool = True)
         if snapshots:
             reasons += check_snapshot(repository, pin=pin)
         reasons += check_files(repository.get("evidence", []), f"{repository['name']} evidence", pin=pin)
+    reasons += check_files(manifest.get("sources", []), "sources", pin=pin)
     return reasons
 
 
@@ -208,18 +210,20 @@ def write_exclusive(target: Path, manifest: dict[str, Any]) -> None:
 
 
 def pin_rule_files(manifest: dict[str, Any]) -> None:
-    """Keep rule paths without content hashes; live task files other than inputs/ are not rules."""
+    """Keep rule paths without content hashes; task files are hashed `sources`, not rules."""
     task_dir = Path(manifest["result"]).resolve().parents[2]
-    inputs = task_dir / "inputs"
     pinned: list[dict[str, str]] = []
     for entry in manifest.get("rule_files", []):
         path = Path(entry["path"]).resolve()
         if not path.exists():
             raise Blocked(f"rule_files: {entry['path']} is missing")
-        if path.is_relative_to(task_dir) and not path.is_relative_to(inputs):
-            raise Blocked(f"rule_files: {entry['path']} is a live task file; pass task data in the mode view")
+        if path.is_relative_to(task_dir):
+            raise Blocked(f"rule_files: {entry['path']} is a task file; pass inputs/ snapshots in sources")
         pinned.append({"path": entry["path"]})
     manifest["rule_files"] = pinned
+    for entry in manifest.get("sources", []):
+        if Path(entry["path"]).resolve() == task_dir / "state.md":
+            raise Blocked("sources: state.md changes during the pass; pass task data in the mode view")
 
 
 def seal(draft_path: Path, target: Path) -> tuple[int, dict[str, Any]]:

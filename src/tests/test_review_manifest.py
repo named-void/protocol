@@ -101,22 +101,31 @@ class ReviewManifestTest(unittest.TestCase):
         self.assertEqual(3, code)
         self.assertTrue(any("HEAD" in reason for reason in output["reasons"]), output)
 
-    def test_rule_change_after_seal_keeps_pass_valid_and_live_task_files_are_rejected(self) -> None:
+    def test_rule_change_keeps_pass_valid_while_task_sources_stay_pinned(self) -> None:
         rule = self.root / "rules.md"
         rule.write_text("v1\n", encoding="utf-8")
-        code, output = self.seal(self.draft(rule_files=[{"path": str(rule)}]))
+        spec = self.task / "inputs" / "spec.json"
+        spec.parent.mkdir(parents=True)
+        spec.write_text("v1\n", encoding="utf-8")
+        code, output = self.seal(self.draft(rule_files=[{"path": str(rule)}], sources=[{"path": str(spec)}]))
         self.assertEqual(0, code, output)
+        manifest = str(self.review / "manifest")
 
         rule.write_text("v2\n", encoding="utf-8")
-        code, verified = self.run_script("verify", str(self.review / "manifest"), "--digest", output["input_digest"])
+        code, verified = self.run_script("verify", manifest, "--digest", output["input_digest"])
         self.assertEqual((0, "ok"), (code, verified["status"]), verified)
+
+        spec.write_text("v2\n", encoding="utf-8")
+        code, verified = self.run_script("verify", manifest)
+        self.assertEqual(3, code)
+        self.assertTrue(any("spec.json sha256" in reason for reason in verified["reasons"]), verified)
 
         state = self.task / "state.md"
         state.write_text("status: accept\n", encoding="utf-8")
         (self.review / "manifest").unlink()
-        code, output = self.seal(self.draft(rule_files=[{"path": str(state)}]))
-        self.assertEqual(2, code)
-        self.assertIn("live task file", output["reasons"][0])
+        for draft in (self.draft(rule_files=[{"path": str(spec)}]), self.draft(sources=[{"path": str(state)}])):
+            code, output = self.seal(draft)
+            self.assertEqual(2, code, output)
 
     def test_seal_refuses_dirty_tree_and_existing_manifest(self) -> None:
         (self.work / "a.txt").write_text("dirty", encoding="utf-8")

@@ -409,8 +409,8 @@ Manifest - JSON-объект со следующими полями:
 
 - `mode`;
 - `repositories`: запись на репозиторий с `name`, абсолютным `work_root`, `base`, `candidate`, обязательными внешними `evidence` в виде списка `{"path": ...}`, а для `requirements-fix` после переписывания `BASE` также `checked_tree`;
-- `rule_files`: абсолютные пути файлов и каталогов применимых правил в виде списка `{"path": ...}`. Содержимое правил не фиксируется: правила развиваются во время прохода, и результат по любой их версии действителен.
-  Файлы `TASK_DIR` вне `inputs/` правилами не являются;
+- `rule_files`: абсолютные пути файлов и каталогов применимых правил в виде списка `{"path": ...}`. Содержимое правил не фиксируется: правила развиваются во время прохода, и результат по любой их версии действителен;
+- `sources`: файлы задачи из `TASK_DIR`, кроме `state.md`, например снимки `inputs/` и `plan.md`, в виде списка `{"path": ...}`; их SHA-256 фиксируется, как у evidence;
 - абсолютные `progress` и `result` режима;
 - `targets`: непустой список целей, только для `requirements-fix`;
 - mode-specific view по правилам режима; для `requirements` и `requirements-fix` view содержит scope, требования и критерии из части "Задача" `state.md`.
@@ -418,11 +418,11 @@ Manifest - JSON-объект со следующими полями:
 Номер review, цикл и runtime-состояние в manifest не включай: они меняют `input_digest` и мешают переиспользованию.
 
 Запиши черновик manifest и запечатай его: `python3 "$PROTOCOL_SKILL/../checker/scripts/review_manifest.py" seal <черновик> <TASK_DIR>/review-<M>/<режим>/manifest`.
-  Скрипт разрешает полные SHA и trees, проверяет `HEAD == candidate`, чистоту дерева, ancestry либо `checked_tree`, наличие правил, считает SHA-256 evidence и `input_digest`, атомарно пишет manifest и отказывает, если файл уже есть.
+  Скрипт разрешает полные SHA и trees, проверяет `HEAD == candidate`, чистоту дерева, ancestry либо `checked_tree`, наличие правил, считает SHA-256 evidence и `sources` и `input_digest`, атомарно пишет manifest и отказывает, если файл уже есть.
 
 - Код 0: запиши в `state.md` путь manifest и его `input_digest`.
-- Код 3 (`stale`): не запускай reviewer и не меняй `checked_candidate`. По `reasons` сдвиг snapshot возвращает задачу в `implement`, отсутствующий или изменённый evidence - в `accept` или `blocked` с причиной и `next`.
-- Код 2 (`blocked`): черновик повреждён, правило отсутствует или лежит в `TASK_DIR` вне `inputs/`, либо manifest уже существует; установи `accept` или `blocked` с причиной и `next`.
+- Код 3 (`stale`): не запускай reviewer и не меняй `checked_candidate`. По `reasons` сдвиг snapshot возвращает задачу в `implement`, отсутствующий или изменённый evidence либо источник - в `accept` или `blocked` с причиной и `next`.
+- Код 2 (`blocked`): черновик повреждён, правило отсутствует или лежит в `TASK_DIR`, `state.md` указан в `sources`, либо manifest уже существует; установи `accept` или `blocked` с причиной и `next`.
 
 Переиспользуй только завершённый child-result, чей manifest проходит `review_manifest.py verify <manifest>` с кодом 0.
   В новой итерации `review-<M>` дополнительно сверь его `input_digest` с `input_digest` запечатанного manifest того же режима.
