@@ -449,6 +449,8 @@ Manifest - JSON-объект со следующими полями:
 8. Запусти недостающие режимы: первичные `requirements`/`technical` одновременно, `requirements-fix` отдельно.
 9. Дождись запущенных thread, прочитай result и собери aggregate-result и protocol-gate из полного набора; отсутствие только aggregate-result не запускает reviewer.
 10. При `stale`, несовпадении manifest, отсутствии result, `failed` или `blocked` не обновляй `checked_candidate`; сдвиг snapshot верни в `implement`, остальные причины запиши как `blocked` с первым действием в `next`.
+    Повторный проход открывает новую `review-<M>` со всеми режимами: неизменившийся режим перезапечатай в ней и переиспользуй его child-result по разделу "Immutable вход checker и recovery".
+    Aggregate-result повторного прохода пиши в `review-<M>/result` этой итерации.
 
 Выполни общий protocol-gate после получения всех обязательных результатов:
 
