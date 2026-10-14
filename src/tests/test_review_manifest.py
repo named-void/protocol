@@ -31,7 +31,8 @@ class ReviewManifestTest(unittest.TestCase):
         self.candidate = self.commit("a.txt", "two")
         self.evidence = self.root / "verify.log"
         self.evidence.write_text("ok\n", encoding="utf-8")
-        self.review = self.root / "review-1" / "technical"
+        self.task = self.root / "task"
+        self.review = self.task / "review-1" / "technical"
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -99,6 +100,23 @@ class ReviewManifestTest(unittest.TestCase):
         code, output = self.run_script("verify", manifest)
         self.assertEqual(3, code)
         self.assertTrue(any("HEAD" in reason for reason in output["reasons"]), output)
+
+    def test_rule_change_after_seal_keeps_pass_valid_and_live_task_files_are_rejected(self) -> None:
+        rule = self.root / "rules.md"
+        rule.write_text("v1\n", encoding="utf-8")
+        code, output = self.seal(self.draft(rule_files=[{"path": str(rule)}]))
+        self.assertEqual(0, code, output)
+
+        rule.write_text("v2\n", encoding="utf-8")
+        code, verified = self.run_script("verify", str(self.review / "manifest"), "--digest", output["input_digest"])
+        self.assertEqual((0, "ok"), (code, verified["status"]), verified)
+
+        state = self.task / "state.md"
+        state.write_text("status: accept\n", encoding="utf-8")
+        (self.review / "manifest").unlink()
+        code, output = self.seal(self.draft(rule_files=[{"path": str(state)}]))
+        self.assertEqual(2, code)
+        self.assertIn("live task file", output["reasons"][0])
 
     def test_seal_refuses_dirty_tree_and_existing_manifest(self) -> None:
         (self.work / "a.txt").write_text("dirty", encoding="utf-8")

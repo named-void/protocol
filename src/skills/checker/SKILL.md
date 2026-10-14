@@ -20,7 +20,8 @@ description: 'Триггеры: явный запрос read-only проверк
   Состав manifest задаёт protocol (раздел "Immutable вход checker и recovery"); mode-specific view правил и обязательных артефактов приходит только через manifest.
 
 До чтения diff выполни `python3 <каталог этого SKILL.md>/scripts/review_manifest.py verify <manifest> --digest <input_digest>`.
-  Скрипт пересчитывает `input_digest`, сверяет коммиты и trees каждой записи `repositories`, `HEAD == CANDIDATE`, чистоту worktree, ancestry `BASE` → `CANDIDATE` либо `BASE^{tree}` с `checked_tree` и SHA-256 evidence и правил.
+  Скрипт пересчитывает `input_digest`, сверяет коммиты и trees каждой записи `repositories`, `HEAD == CANDIDATE`, чистоту worktree, ancestry `BASE` → `CANDIDATE` либо `BASE^{tree}` с `checked_tree` и SHA-256 evidence.
+  Правила сверке не подлежат: читай их текущую версию.
 
 - Код 0: продолжай проверку.
 - Код 3: верни `stale` без содержательного аудита.

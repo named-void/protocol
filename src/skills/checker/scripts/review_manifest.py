@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Seal and verify the immutable input manifest of one checker mode.
 
-seal <draft> <manifest>: resolve snapshots and digests, check them, write the manifest atomically.
+seal <draft> <manifest>: resolve snapshots and evidence digests, check them, write the manifest atomically.
+  Rule files are kept by path only: rules evolve while a pass runs, and any of their versions is valid.
 verify <manifest> [--digest D] [--integrity]: recheck a sealed manifest against the current state;
   --integrity skips Git snapshots, which Git finalization legitimately rewrites.
 
@@ -68,7 +69,7 @@ def _absolute(value: Any, field: str) -> str:
     return value
 
 
-def _files(manifest: dict[str, Any], key: str, owner: str, *, sealed: bool) -> list[dict[str, Any]]:
+def _files(manifest: dict[str, Any], key: str, owner: str, *, sealed: bool, hashed: bool) -> list[dict[str, Any]]:
     entries = manifest.get(key, [])
     if not isinstance(entries, list):
         raise Blocked(f"{owner}{key}: list required")
@@ -77,7 +78,7 @@ def _files(manifest: dict[str, Any], key: str, owner: str, *, sealed: bool) -> l
         if not isinstance(entry, dict):
             raise Blocked(f"{field}: object required")
         _absolute(entry.get("path"), f"{field}.path")
-        if sealed and not isinstance(entry.get("sha256"), str):
+        if sealed and hashed and not isinstance(entry.get("sha256"), str):
             raise Blocked(f"{field}.sha256 missing")
     return entries
 
@@ -113,8 +114,8 @@ def validate(manifest: Any, *, sealed: bool) -> dict[str, Any]:
                 raise Blocked(f"{field}.{key}: string required")
         if "checked_tree" in repository and mode != "requirements-fix":
             raise Blocked(f"{field}.checked_tree: allowed only in requirements-fix")
-        _files(repository, "evidence", f"{field}.", sealed=sealed)
-    _files(manifest, "rule_files", "", sealed=sealed)
+        _files(repository, "evidence", f"{field}.", sealed=sealed, hashed=True)
+    _files(manifest, "rule_files", "", sealed=sealed, hashed=False)
     if sealed and not isinstance(manifest.get("input_digest"), str):
         raise Blocked("input_digest missing")
     return manifest
@@ -180,7 +181,6 @@ def check_inputs(manifest: dict[str, Any], *, pin: bool, snapshots: bool = True)
         if snapshots:
             reasons += check_snapshot(repository, pin=pin)
         reasons += check_files(repository.get("evidence", []), f"{repository['name']} evidence", pin=pin)
-    reasons += check_files(manifest.get("rule_files", []), "rule_files", pin=pin)
     return reasons
 
 
@@ -207,9 +207,25 @@ def write_exclusive(target: Path, manifest: dict[str, Any]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def pin_rule_files(manifest: dict[str, Any]) -> None:
+    """Keep rule paths without content hashes; live task files other than inputs/ are not rules."""
+    task_dir = Path(manifest["result"]).resolve().parents[2]
+    inputs = task_dir / "inputs"
+    pinned: list[dict[str, str]] = []
+    for entry in manifest.get("rule_files", []):
+        path = Path(entry["path"]).resolve()
+        if not path.exists():
+            raise Blocked(f"rule_files: {entry['path']} is missing")
+        if path.is_relative_to(task_dir) and not path.is_relative_to(inputs):
+            raise Blocked(f"rule_files: {entry['path']} is a live task file; pass task data in the mode view")
+        pinned.append({"path": entry["path"]})
+    manifest["rule_files"] = pinned
+
+
 def seal(draft_path: Path, target: Path) -> tuple[int, dict[str, Any]]:
     manifest = validate(load(draft_path), sealed=False)
     manifest.pop("input_digest", None)
+    pin_rule_files(manifest)
     reasons = check_inputs(manifest, pin=True)
     if reasons:
         return 3, {"status": "stale", "reasons": reasons}
