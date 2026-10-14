@@ -418,7 +418,7 @@ Manifest - JSON-объект со следующими полями:
 Запиши черновик manifest и запечатай его: `python3 "$PROTOCOL_SKILL/../checker/scripts/review_manifest.py" seal <черновик> <TASK_DIR>/review-<M>/<режим>/manifest`.
   Скрипт разрешает полные SHA и trees, проверяет `HEAD == candidate`, чистоту дерева, ancestry либо `checked_tree`, считает SHA-256 evidence и правил и `input_digest`, атомарно пишет manifest и отказывает, если файл уже есть.
 
-- Код 0: запиши путь manifest в `state.md`.
+- Код 0: запиши в `state.md` путь manifest и его `input_digest`.
 - Код 3 (`stale`): не запускай reviewer и не меняй `checked_candidate`. По `reasons` сдвиг snapshot возвращает задачу в `implement`, отсутствующий или изменённый evidence - в `accept` или `blocked` с причиной и `next`.
 - Код 2 (`blocked`): черновик повреждён или manifest уже существует; установи `accept` или `blocked` с причиной и `next`.
 
