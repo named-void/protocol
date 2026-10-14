@@ -1,7 +1,7 @@
 ---
 name: protocol
 description: 'Триггеры: точное сообщение `read-protocol`; поручение, оканчивающееся отдельным токеном `/protocol`;
-  после `read-protocol` - сообщение только из Jira URL `https://HOST/browse/KEY`, ключа `UPL-CODE` или URL GitLab MR.'
+  после `read-protocol` - точное сообщение `загрузи upl-policy` или сообщение только из Jira URL `https://HOST/browse/KEY`, ключа `UPL-CODE` или URL GitLab MR.'
 ---
 
 # Протокол задачи
@@ -25,6 +25,7 @@ description: 'Триггеры: точное сообщение `read-protocol`;
 Команда `read-protocol` и токен `/protocol` в постановку задачи не входят. Сообщение-команду сравнивай после удаления внешних пробелов.
 
 - `read-protocol`: отдельное сообщение, состоящее ровно из `read-protocol`, запускает read-only подготовку общей protocol-сессии.
+- `загрузи upl-policy`: если в сессии ранее успешно выполнено `read-protocol`, сообщение, состоящее ровно из `загрузи upl-policy`, загружает policy шаблона upl (раздел "Загрузка upl-policy").
 - Jira URL или ключ: если в сессии ранее успешно выполнено `read-protocol`, сообщение из одного полного Jira URL вида `https://<host>/browse/<KEY>` или ключа `UPL-<code>` запускает локальную инвентаризацию.
   Токен `/protocol` для этого не нужен. До анализа найденных артефактов и предложения дальнейшего действия обычное выполнение задачи не начинай.
 - MR URL: если в сессии ранее успешно выполнено `read-protocol`, сообщение из одного прямого URL GitLab MR вида `https://<host>/<project>/-/merge_requests/<iid>` запускает поиск задачи MR, а без задачи - техническое ревью MR.
@@ -62,7 +63,7 @@ Issue tracker в protocol используй только для чтения.
 
 1. Прочитай карту `upl`: `<projects-root>/upl/project.toml`, где `<projects-root>` выводит `python3 "$PROTOCOL_SRC/lib/skills_config.py" projects-root`.
 2. Выбери `UPL_ROOT`: существующий корень из вывода `python3 "$PROTOCOL_SRC/lib/skills_config.py" roots --project upl`.
-3. Прочитай `$PROTOCOL_SKILL/references/git-lifecycle.md`, технологические профили из `profile_rules` карты для `upl/services` и все policy из её `policies`, отсчитывая их путь от `UPL_ROOT`.
+3. Прочитай `$PROTOCOL_SKILL/references/git-lifecycle.md` и технологические профили из `profile_rules` карты для `upl/services`.
    Путь вида `profiles/<файл>.md` из `profile_rules` отсчитывай от `$PROTOCOL_SRC`.
    Проектную прозу карты (`./`-пути из её `profile_rules`) на подготовке не читай: её читает сессия задачи, ключ которой начинается с `UPL-`.
 4. Последними прочитай исходники адаптеров: `$PROTOCOL_SRC/skills/adapter/issues/SKILL.md`, `$PROTOCOL_SRC/skills/adapter/vcs/SKILL.md` и `$PROTOCOL_SRC/skills/adapter/wiki/SKILL.md`.
@@ -70,6 +71,12 @@ Issue tracker в protocol используй только для чтения.
 Отсутствующий обязательный файл или каталог блокирует подготовку.
 
 Не читай issue, не вызывай адаптеры, не выполняй Branch-Sync, не выбирай сервис или checkout, не создавай task state и не меняй файлы или Git. После успешной загрузки кратко подтверди готовность и не переходи к выполнению задачи.
+
+## Загрузка upl-policy
+
+Прочитай все файлы policy из `policies` правила карты `upl` для `upl/services`, отсчитывая путь от `UPL_ROOT`; отсутствующий или нечитаемый файл блокирует загрузку.
+  Остальные ограничения подготовки действуют и здесь. После загрузки кратко подтверди готовность и не переходи к выполнению задачи.
+  Сессия без этой загрузки корректна: policy задачи читаются на шаге 2 раздела "Рабочее дерево и правила проекта".
 
 ## Выполнение задачи
 
