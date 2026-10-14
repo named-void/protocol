@@ -89,14 +89,14 @@
 2. Через `adapter-vcs` получи `diff_refs` MR и все discussions с учётом pagination. `BASE` - `diff_refs.base_sha`, `CANDIDATE` - `diff_refs.head_sha`.
 3. Каталог ревью - `<DATA_ROOT>/mr-reviews/<имя local_path>-mr<iid>/`, проход - его следующая итерация `review-<M>`.
 4. Подготовь снимок, не меняя ветки и рабочее дерево `local_path`:
-   `git -C <local_path> fetch origin refs/merge-requests/<iid>/head` и `git -C <local_path> worktree add --detach <local_path>-mr<iid> <CANDIDATE>`.
-   Если каталог `<local_path>-mr<iid>` уже есть, удали его командой `git worktree remove` при чистом дереве; иначе остановись и назови каталог.
+   - если каталог `<local_path>-mr<iid>` уже существует, остановись и назови его пользователю: принадлежность каталога этому ревью не доказана, поэтому не удаляй и не переиспользуй его;
+   - иначе выполни `git -C <local_path> fetch origin refs/merge-requests/<iid>/head` и `git -C <local_path> worktree add --detach <local_path>-mr<iid> <CANDIDATE>`.
 5. Получи профили командой `python3 "$PROTOCOL_SRC/lib/skills_config.py" profiles --path <local_path>`. Передай их в `rule_files`.
    В `excluded_rules` передай policy-файлы и каталоги, которые профили требуют загрузить как policy шаблона (для upl - `<UPL_ROOT>/templates/templ-service/policy`).
 6. Собери manifest режима `technical` по разделу "Manifest" `accept.md` с `work_root` временного worktree, запечатай его в `review-<M>/technical/manifest` и запусти reviewer.
 7. Отбери кандидатов по разделу "Protocol-gate" `accept.md`. Scope и реестра нет: вместо дедупликации по реестру исключи уже опубликованные в discussions замечания без нового доказательства.
    Итог отбора запиши в `review-<M>/result`.
-8. Удали временный worktree командой `git -C <local_path> worktree remove <local_path>-mr<iid>`, в том числе после `stale` или `blocked`.
+8. Удали worktree, созданный на шаге 4, командой `git -C <local_path> worktree remove <local_path>-mr<iid>`, в том числе после `stale` или `blocked`.
 9. Выдай подтверждённые findings нумерованным списком по убыванию severity: confidence, `path:line`, проблема, доказательство, последствие, правило и направление исправления.
    При чистом результате напиши `findings нет`; открытые вопросы перечисли отдельно.
 
