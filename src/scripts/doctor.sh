@@ -49,10 +49,10 @@ else
   echo "warn: shellcheck not installed"
 fi
 
-# Файл секретов: дефолт — <data-root>/config.toml, корень носителя резолвит сам
-# конфиг-модуль (`skills_config.py data-root`), второй копии правила `.data`
-# здесь нет.
-config=${AGENTS_SECRETS:-$(python3 "$repo_root/lib/skills_config.py" data-root)/config.toml}
+# Файл секретов: дефолт — <data-root>/config.toml общего периметра станции,
+# корень резолвит сам конфиг-модуль (`skills_config.py data-root`), второй
+# копии правила `.data` здесь нет.
+config=${AGENTS_SECRETS:-$(python3 "$repo_root/lib/skills_config.py" data-root --project _common)/config.toml}
 
 # Карты носителей проверяются всегда: они версионируются и живут в дереве, а
 # отсутствие файла секретов — состояние новой машины, а не повод пропустить

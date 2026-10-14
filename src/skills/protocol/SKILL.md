@@ -78,7 +78,8 @@ Issue tracker в protocol используй только для чтения.
 ### Вход и рабочий каталог
 
 `DATA_ROOT` получай командой `python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root --path <каталог проекта>` либо `python3 "$PROTOCOL_SRC/lib/skills_config.py" data-root --project <проект>`.
-  Вне опознанного проекта команда с этими аргументами завершается ошибкой.
+  Без аргументов и с `--path` вне опознанного проекта команда завершается ошибкой.
+  Если `skills_config.py project --path <каталог>` отвечает `- outside`, например при доработке самого protocol, везде вместо `--path` передавай `--project _common`.
 
 #### С Jira URL
 

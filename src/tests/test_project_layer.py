@@ -262,13 +262,6 @@ class ProjectLayerTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual([str(self.work)], result.stdout.split())
 
-    def test_data_root_uses_project_runtime_store(self) -> None:
-        self.acme()
-        result = self.run_cli("data-root", cwd=self.work)
-
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(str(self.projects / "acme" / ".data"), result.stdout.strip())
-
     def test_projects_root_uses_configured_carrier(self) -> None:
         result = self.run_cli("projects-root")
 
@@ -302,8 +295,15 @@ class ProjectLayerTest(unittest.TestCase):
         self.assertEqual(1, result.returncode)
         self.assertIn("invalid task key base", result.stderr)
 
-    def test_data_root_uses_common_runtime_store_outside_a_known_project(self) -> None:
+    def test_data_root_without_perimeter_fails_instead_of_common(self) -> None:
         result = self.run_cli("data-root", cwd=self.root)
+
+        self.assertEqual(2, result.returncode)
+        self.assertEqual("", result.stdout)
+
+    def test_data_root_reaches_common_perimeter_only_explicitly(self) -> None:
+        self.write_project("_common", OUTSIDE)
+        result = self.run_cli("data-root", "--project", "_common", cwd=self.root)
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(str(self.projects / "_common" / ".data"), result.stdout.strip())

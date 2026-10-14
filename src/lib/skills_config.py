@@ -15,7 +15,7 @@ CLI::
     python3 skills_config.py export-env
     python3 skills_config.py project [--path <dir>]
     python3 skills_config.py projects-root
-    python3 skills_config.py data-root
+    python3 skills_config.py data-root (--path <dir> | --project <name>)
     python3 skills_config.py allocate-task-key <base> [--path <dir>]
     python3 skills_config.py roots [--project <name>]
 
@@ -794,12 +794,12 @@ def cmd_roots(args: list[str]) -> int:
 
 
 def cmd_data_root(args: list[str]) -> int:
-    """Корень рантайма носителя одной строкой — резолв для shell-потребителей
+    """Корень рантайма периметра одной строкой — резолв для shell-потребителей
     (`scripts/doctor.sh`): второй копии правила `.data` в скриптах быть не
-    должно. С `--path` или `--project` проект обязателен: вне опознанного
-    проекта команда завершается ошибкой, а не молча отдаёт `_common`, где
-    артефактов задачи нет."""
-    usage = "usage: skills_config.py data-root [--path <dir> | --project <name>]"
+    должно. Периметр задаётся явно: `--path` вне опознанного проекта — ошибка,
+    общий периметр доступен только как `--project _common`. Неявного отката в
+    `_common`, где артефактов проектной задачи нет, у команды нет."""
+    usage = "usage: skills_config.py data-root (--path <dir> | --project <name>)"
     path: str | None = None
     project: str | None = None
     rest = list(args)
@@ -814,12 +814,9 @@ def cmd_data_root(args: list[str]) -> int:
         else:
             print(f"error: unexpected argument {item!r}\n{usage}", file=sys.stderr)
             return 2
-    if path is not None and project is not None:
-        print(f"error: --path and --project are mutually exclusive\n{usage}", file=sys.stderr)
+    if (path is None) == (project is None):
+        print(f"error: exactly one of --path and --project is required\n{usage}", file=sys.stderr)
         return 2
-    if path is None and project is None:
-        print(data_root())
-        return 0
     try:
         if project is not None:
             if project not in project_names():
@@ -828,7 +825,9 @@ def cmd_data_root(args: list[str]) -> int:
         else:
             name = _project_of_path(Path(path).expanduser())
             if name is None:
-                raise ConfigError(f"{path}: outside every known project")
+                raise ConfigError(
+                    f"{path}: outside every known project; the common perimeter is --project {COMMON_PROJECT}"
+                )
     except ConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
@@ -976,7 +975,7 @@ def main(argv: list[str]) -> int:
         "usage: skills_config.py get <dotted.key> [--default X] [--json]"
         " | validate | export-env"
         " | project [--path <dir>] | profiles [--path <dir>]"
-        " | projects-root | data-root [--path <dir> | --project <name>]"
+        " | projects-root | data-root (--path <dir> | --project <name>)"
         " | allocate-task-key <base> [--path <dir>]"
         " | roots [--project <name>]",
         file=sys.stderr,
