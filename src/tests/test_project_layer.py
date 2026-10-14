@@ -308,6 +308,20 @@ class ProjectLayerTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(str(self.projects / "_common" / ".data"), result.stdout.strip())
 
+    def test_data_root_with_path_resolves_project_regardless_of_cwd(self) -> None:
+        self.acme()
+        result = self.run_cli("data-root", "--path", str(self.work), cwd=self.root)
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual(str(self.projects / "acme" / ".data"), result.stdout.strip())
+
+    def test_data_root_with_path_outside_projects_fails_instead_of_common(self) -> None:
+        result = self.run_cli("data-root", "--path", str(self.root), cwd=self.root)
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual("", result.stdout)
+        self.assertIn("outside every known project", result.stderr)
+
     def test_src_checkout_uses_parent_as_runtime_carrier(self) -> None:
         with mock.patch.object(
             skills_config, "rules_repo_root", return_value=Path("/carrier/src")

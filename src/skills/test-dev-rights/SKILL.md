@@ -10,8 +10,7 @@ description: 'Триггер: точное сообщение `test-dev-rights U
 1. Разреши `PROTO` от физического расположения skill (симлинк каталога навыка checkout не даёт): `PROTO="$(dirname "$(realpath '<путь загруженного test-dev-rights/SKILL.md>')")/../.."` — каталог `src` репозитория протокола.
    Проверь `test -r` для `$PROTO/skills/protocol/scripts/resolve_issue.py` и `$PROTO/lib/skills_config.py`, отсутствие — блокер.
    Запусти `python3 "$PROTO/skills/protocol/scripts/resolve_issue.py" <UPL-code>`, сохрани `KEY` и `project_roots`.
-   `DATA_ROOT` получи только с контекстом проекта — `cd <project_roots[0]> && python3 "$PROTO/lib/skills_config.py" data-root` либо `AGENTS_PROJECT=<проект> python3 "$PROTO/lib/skills_config.py" data-root`.
-   Аргументы команда игнорирует, а без контекста молча возвращает `projects/_common/.data`, где state задачи нет.
+   `DATA_ROOT` получи командой `python3 "$PROTO/lib/skills_config.py" data-root --path <project_roots[0]>`; вне опознанного проекта она завершается ошибкой.
 2. Прочитай единственный `<DATA_ROOT>/tasks/<KEY>/state.md` (`TASK_DIR`) и `$PROTO/../projects/upl/environment.md`.
    Если `state.md` отсутствует, перепроверь контекст `DATA_ROOT` из шага 1; блокируй только после повторной проверки.
    Продолжай только при `status: completed`, заполненных `candidate` и `checked_candidate`, принятом результате и обязательных evidence, иначе — блокер.

@@ -115,15 +115,15 @@ def runtime_carrier_root() -> Path:
     return source_root.parent if source_root.name == "src" else source_root
 
 
-def data_root() -> Path:
+def data_root(project: str | None = None) -> Path:
     """Корень рантайма периметра (orchestration/adr/README.md#runtime-store):
-    ``<carrier>/projects/<проект>/.data`` для опознанного проекта,
-    ``<carrier>/projects/_common/.data`` для работы вне проекта.
+    ``<carrier>/projects/<проект>/.data`` для явно переданного или опознанного
+    проекта, ``<carrier>/projects/_common/.data`` для работы вне проекта.
     ``$AGENTS_DATA_DIR`` сохраняет приоритет."""
     override = os.environ.get("AGENTS_DATA_DIR")
     if override:
         return Path(override)
-    name, _ = identify_project()
+    name = project or identify_project()[0]
     if name:
         return projects_root() / name / ".data"
     return projects_root() / COMMON_PROJECT / ".data"
@@ -793,11 +793,46 @@ def cmd_roots(args: list[str]) -> int:
     return 0
 
 
-def cmd_data_root(_args: list[str]) -> int:
+def cmd_data_root(args: list[str]) -> int:
     """Корень рантайма носителя одной строкой — резолв для shell-потребителей
     (`scripts/doctor.sh`): второй копии правила `.data` в скриптах быть не
-    должно."""
-    print(data_root())
+    должно. С `--path` или `--project` проект обязателен: вне опознанного
+    проекта команда завершается ошибкой, а не молча отдаёт `_common`, где
+    артефактов задачи нет."""
+    usage = "usage: skills_config.py data-root [--path <dir> | --project <name>]"
+    path: str | None = None
+    project: str | None = None
+    rest = list(args)
+    while rest:
+        item = rest.pop(0)
+        if item in ("--path", "--project") and rest:
+            value = rest.pop(0)
+            if item == "--path":
+                path = value
+            else:
+                project = value
+        else:
+            print(f"error: unexpected argument {item!r}\n{usage}", file=sys.stderr)
+            return 2
+    if path is not None and project is not None:
+        print(f"error: --path and --project are mutually exclusive\n{usage}", file=sys.stderr)
+        return 2
+    if path is None and project is None:
+        print(data_root())
+        return 0
+    try:
+        if project is not None:
+            if project not in project_names():
+                raise ConfigError(f"no project card at {project_config_path(project)}")
+            name = project
+        else:
+            name = _project_of_path(Path(path).expanduser())
+            if name is None:
+                raise ConfigError(f"{path}: outside every known project")
+    except ConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(data_root(name))
     return 0
 
 
@@ -941,7 +976,8 @@ def main(argv: list[str]) -> int:
         "usage: skills_config.py get <dotted.key> [--default X] [--json]"
         " | validate | export-env"
         " | project [--path <dir>] | profiles [--path <dir>]"
-        " | projects-root | data-root | allocate-task-key <base> [--path <dir>]"
+        " | projects-root | data-root [--path <dir> | --project <name>]"
+        " | allocate-task-key <base> [--path <dir>]"
         " | roots [--project <name>]",
         file=sys.stderr,
     )
