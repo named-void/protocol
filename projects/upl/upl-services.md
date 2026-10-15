@@ -109,7 +109,7 @@
   Во время приёмки не пиши в общие БД; если без фикстуры проверку не провести, заводи её по правилам общей БД в `environment.md` и фиксируй в `notes.md`.
 - Схему прохождения запросов по разделу "Схема прохождения запросов" `accept.md` составляй из узлов UPL:
   - вход `envoy + auth` и bff;
-  - процессы сервисов `<сервис>-<процесс>[UPL-N|develop]` по каталогам `cmd/`: `api`, `consumer`, `worker`, `poller`;
+  - процессы сервисов под именами экземпляров стенда: api - `<сервис>[-<N>]`, фоновые `consumer`, `worker`, `poller` - `<сервис>.<процесс>[-<N>]`;
   - топики Kafka с группой потребителя, очереди RabbitMQ, БД, Redis и внешние сервисы, например file-storage из `FILE_STORAGE_BASE_URL` report-service.
 - Источник перехода на схеме UPL:
   - маршрут шлюза - HTTPRoute в `services/envoy/config/routes.yaml`, маршрут bff - блок в `configs/aggregation.yaml`, обработчик - `internal/transport/http/v1/router.go`;

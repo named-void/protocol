@@ -20,7 +20,9 @@
 #                       envoy (gateway) управляется теми же командами: up рендерит конфиг
 #                       из чекаута/worktree задачи и держит контейнер compose
 #   svc up|down|logs|status <svc> [--task UPL-XXXX | --branch <b> --suffix <N>] [--proc api|worker|consumer|poller]
-#                       <svc> — go-сервисы и envoy
+#                       <svc> - go-сервисы и envoy; фоновый процесс (--proc consumer|worker|poller) -
+#                       отдельный экземпляр <svc>.<proc>[-<N>] с портом health 10000+1000*i+(порт-8000);
+#                       на стенде работает один экземпляр каждого фонового процесса (develop или задачи)
 #   svc migrate <svc> [--task ...] up|down
 #   svc switch [<branch>] [--fetch] — переключить основные чекауты; без аргумента
 #                       или с develop|master|main каждый репозиторий встаёт на свою
@@ -34,7 +36,8 @@
 #   seed catalog
 #   accept <UPL-XXXX> — поднимает экземпляры всех затронутых задачей сервисов:
 #                       по worktree, живому экземпляру или task-ветке (стенд
-#                       завершённой задачи поднимается из её ветки заново)
+#                       завершённой задачи поднимается из её ветки заново),
+#                       и фоновые процессы, чей код меняет задача
 #   task close <UPL-XXXX>
 #   dev sync|check  — синхронизация/отчёт локальных БД с develop postgres (read-only)
 #   doctor
@@ -181,6 +184,7 @@ port_holder() { # <port> → "имя (ветка)" живого экземпля
   for f in "$RT"/run/*.pid; do
     [ -f "$f" ] || continue
     n="$(basename "$f" .pid)"
+    case "$n" in *.*) continue ;; esac # фоновый процесс: свой порт, держателя называет bg_slot_holder
     instance_running "$n" || continue
     case "$n" in
       *-*) base="$(svc_port "${n%%-*}")"; p=$((9000 + base - 8000)); srcdir="$(worktree_path "${n%%-*}" "${n##*-}")" ;;
@@ -367,6 +371,33 @@ refresh_peers() { # <svc>... — сервисы, чьи задачные экз�
         || info "$name: не поднялся после перерендера — подними вручную: svc up $d --task UPL-$sfx"
     done
   done
+  # Фоновые процессы: их env несёт тех же пиров, что у api сервиса.
+  # Устаревание - по факту: в env нет текущего live-адреса пира.
+  local p
+  for d in $KNOWN_SERVICES; do
+    for name in $(bg_instance_names "$d"); do
+      instance_running "$name" || continue
+      [ -f "$(envfile "$name")" ] || continue
+      need=0; stale=0
+      for c in "$@"; do
+        case " $(svc_peers "$d" 2>/dev/null) " in *" $c "*)
+          need=1
+          grep -Eq "http://localhost:$(live_port "$c")([^0-9]|\$)" "$(envfile "$name")" || stale=1 ;;
+        esac
+      done
+      { [ "$need" = "1" ] && [ "$stale" = "1" ]; } || continue
+      sfx="$(inst_sfx "$name")"; p="$(inst_proc "$name")"
+      info "$name: адрес пира сменился - перезапускаю с обновлённым env"
+      stop_instance "$name"
+      if [ -n "$sfx" ]; then
+        ( cmd_svc_up "$d" --task "UPL-$sfx" --proc "$p" ) \
+          || info "$name: не поднялся после перерендера - подними вручную: svc up $d --task UPL-$sfx --proc $p"
+      else
+        ( cmd_svc_up "$d" --proc "$p" ) \
+          || info "$name: не поднялся после перерендера - подними вручную: svc up $d --proc $p"
+      fi
+    done
+  done
 }
 
 # ── БД ───────────────────────────────────────────────────────────────────────
@@ -425,7 +456,9 @@ cmd_supervisor() { # __supervisor <name> <src> <env> <proc> — запуск о�
   printf '%s' "$child" > "$(childfile "$name")"
   wait "$child"
   rc=$?
-  hint="$name"; case "$name" in *-*) hint="${name%%-*} --task UPL-${name##*-}";; esac
+  hint="${name%%[.-]*}"
+  case "$name" in *-*) hint="$hint --task UPL-${name##*-}" ;; esac
+  [ "$proc" = "api" ] || hint="$hint --proc $proc"
   printf '[%s] процесс завершён (код %s) - автоперезапуска нет; подними заново: svc up %s\n' \
     "$(date '+%H:%M:%S')" "$rc" "$hint" >> "$(logfile "$name")"
   rm -f "$(pidfile "$name")" "$(childfile "$name")"
@@ -494,6 +527,70 @@ instance_names() { # <svc> → имена живых/зафиксированн�
     [ -e "$f" ] || continue
     base="$(basename "$f" .pid)"
     echo "$base"
+  done
+}
+
+# Фоновые процессы сервиса (cmd/<proc>, кроме api) - отдельные экземпляры
+# <svc>.<proc>[-<N>]: свой env, лог и порт health/metrics. Экземпляры одного
+# процесса делят группы Kafka и данные, поэтому на стенде работает один
+# экземпляр каждого фонового процесса - develop или одной задачи.
+BG_PROCS="consumer worker poller"
+
+instance_name() { # <svc> <sfx|""> <proc> -> имя: api - <svc>[-<sfx>], фоновый - <svc>.<proc>[-<sfx>]
+  local n="$1"
+  [ "$3" = "api" ] || n="$1.$3"
+  [ -n "$2" ] && n="$n-$2"
+  printf '%s' "$n"
+}
+
+inst_proc() { # <имя> -> процесс экземпляра
+  local base="${1%%-*}"
+  case "$base" in *.*) printf '%s' "${base#*.}" ;; *) printf 'api' ;; esac
+}
+
+inst_sfx() { # <имя> -> суффикс задачи или пусто
+  case "$1" in *-*) printf '%s' "${1##*-}" ;; esac
+}
+
+proc_port() { # <svc> <proc> -> порт health/metrics фонового процесса: один на сервис и процесс
+  local base idx
+  base="$(svc_port "$1")"
+  [ -n "$base" ] || return 1
+  case "$2" in consumer) idx=0 ;; worker) idx=1 ;; poller) idx=2 ;; *) return 1 ;; esac
+  echo $((10000 + 1000 * idx + base - 8000))
+}
+
+svc_bg_procs() { # <дерево> -> фоновые процессы, у которых есть cmd/<proc>
+  local p
+  for p in $BG_PROCS; do
+    if [ -d "$1/cmd/$p" ]; then printf '%s ' "$p"; fi
+  done
+}
+
+bg_instance_names() { # <svc> -> имена экземпляров фоновых процессов с pid-файлом
+  local f
+  for f in "$RT"/run/"$1".*.pid; do
+    if [ -e "$f" ]; then basename "$f" .pid; fi
+  done
+}
+
+bg_slot_holder() { # <svc> <proc> <имя> -> живой экземпляр того же фонового процесса, кроме <имя>
+  local n
+  for n in $(bg_instance_names "$1"); do
+    [ "$n" = "$3" ] && continue
+    [ "$(inst_proc "$n")" = "$2" ] || continue
+    instance_running "$n" && { printf '%s' "$n"; return 0; }
+  done
+  return 1
+}
+
+stop_develop_bg() { # <svc> - гасит develop-экземпляры фоновых процессов: их код меняется вместе с чекаутом
+  local n
+  for n in $(bg_instance_names "$1"); do
+    [ -z "$(inst_sfx "$n")" ] || continue
+    instance_running "$n" || continue
+    stop_instance "$n"
+    info "svc switch: $n - экземпляр остановлен для обновления кода (подними: svc up $1 --proc $(inst_proc "$n"))"
   done
 }
 
@@ -683,6 +780,10 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     cmd_svc_up_gateway "$svc" "$task_key" "$branch"
     return
   fi
+  case "$proc" in
+    api) ;;
+    *) proc_port "$svc" "$proc" >/dev/null || die "svc up: неизвестный процесс '$proc' (api|consumer|worker|poller)" ;;
+  esac
   command -v go >/dev/null || die "go не найден в PATH (/usr/local/go/bin)"
   docker ps --format '{{.Names}}' | grep -qx db || die "инфраструктура не поднята: upl-infra.sh infra up"
 
@@ -727,12 +828,22 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
     src="$repo"
     [ "$cur" = "develop" ] || die "$svc: ветка '$cur' — не develop и не задачная (feature/UPL-N); переключи чекаут (svc switch) или подними явно через --task"
   fi
+  # Фоновый процесс - отдельный экземпляр со своим портом health/metrics.
+  if [ "$proc" != "api" ]; then
+    if [ "$inst_task" = "1" ]; then name="$(instance_name "$svc" "$sfx" "$proc")"; else name="$(instance_name "$svc" "" "$proc")"; fi
+    port="$(proc_port "$svc" "$proc")"
+  fi
   # Занятость проверяем до любых side effects (worktree, клон БД, env, миграции):
   # чужой экземпляр и его БД не трогаются, отказ дешёвый
   # (протокол параллельной работы - environment.md).
   if instance_running "$name"; then
     info "$name уже запущен (порт $port) — автоперезапуска нет; для нового кода: svc down + svc up"
     return 0
+  fi
+  if [ "$proc" != "api" ]; then
+    local bg_holder
+    bg_holder="$(bg_slot_holder "$svc" "$proc" "$name")" \
+      && die "$name: процесс $svc.$proc уже работает как $bg_holder - экземпляры одного процесса делят группы Kafka и данные; жди его остановки или договаривайся"
   fi
   if port_busy "$port"; then
     local holder; holder="$(port_holder "$port")"
@@ -763,6 +874,7 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
       dbname="$dn"
     fi
   fi
+  [ -d "$src/cmd/$proc" ] || die "$name: в $(basename "$src") нет cmd/$proc"
   # Удалённый отслеживаемый .env.example восстанавливаем сами (render_env без него
   # невозможен); локальные правки существующего файла не трогаем.
   if [ ! -f "$src/configs/.env.example" ] \
@@ -773,6 +885,10 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   # env рендерим до миграций: мигать можно только с проверенным CONFIG_PATH
   # (environment.md), общий рендер даёт хост/порт/имя БД этого экземпляра.
   render_env "$svc" "$src" "$(envfile "$name")" "$port" "$dbname" "$inst_task"
+  if [ "$proc" != "api" ]; then
+    local k
+    for k in WORKER_PORT CONSUMER_PORT POLLER_PORT; do env_set "$(envfile "$name")" "$k" "$port"; done
+  fi
   # Миграции на общем инстансе - только у владельца БД: develop-экземпляр или задачный
   # со своей <db>_<N>; миграции задачного дерева на общей БД запрещены (environment.md).
   if [ -n "$(svc_dbhost "$svc" 2>/dev/null || true)" ] && [ -d "$src/cmd/migrate" ] \
@@ -786,15 +902,16 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   nohup bash "$SELF" __supervisor "$name" "$src" "$(envfile "$name")" "$proc" >/dev/null 2>&1 &
   disown 2>/dev/null
   sleep 1 # супервизор успел записать свой pid в pidfile
-  # A4: «поднят» честно - после bind порта, а не после факта старта go run.
+  # A4: "поднят" честно - после bind порта (у фонового процесса - порта health), а не после факта старта go run.
+  wait_for_listen "$port" 20 \
+    || info "предупреждение: $name не слушает порт $port за 20 с — go run ещё компилирует или упал; лог: $(logfile "$name")"
+  # Адреса шлюза и пиров зависят только от api-экземпляров.
   if [ "$proc" = "api" ]; then
-    wait_for_listen "$port" 20 \
-      || info "предупреждение: $name не слушает порт $port за 20 с — go run ещё компилирует или упал; лог: $(logfile "$name")"
+    if docker ps --format '{{.Names}}' | grep -qx envoy; then
+      envoy_rewrite_backends_live # живые инстансы поменялись — file provider перечитает
+    fi
+    [ "$inst_task" = "1" ] && refresh_peers "$svc" # A1: разв- и поднятые задачные на новый адрес пира
   fi
-  if docker ps --format '{{.Names}}' | grep -qx envoy; then
-    envoy_rewrite_backends_live # живые инстансы поменялись — file provider перечитает
-  fi
-  [ "$inst_task" = "1" ] && refresh_peers "$svc" # A1: разв- и поднятые задачные на новый адрес пира
   info "$name поднят: порт $port${dbname:+, БД $dbname}, лог $(logfile "$name")"
 }
 
@@ -817,12 +934,14 @@ cmd_svc_down() {
     fi
     return
   fi
-  local name="$svc"; [ -n "$sfx" ] && name="$svc-$sfx"
+  local name; name="$(instance_name "$svc" "$sfx" "$proc")"
   stop_instance "$name"
-  if docker ps --format '{{.Names}}' | grep -qx envoy; then
-    envoy_rewrite_backends_live
+  if [ "$proc" = "api" ]; then
+    if docker ps --format '{{.Names}}' | grep -qx envoy; then
+      envoy_rewrite_backends_live
+    fi
+    [ -n "$sfx" ] && refresh_peers "$svc" # A1: пиры возвращаются на develop-адрес
   fi
-  [ -n "$sfx" ] && refresh_peers "$svc" # A1: пиры возвращаются на develop-адрес
   info "$name остановлен"
 }
 
@@ -872,6 +991,16 @@ cmd_svc_down_all() { # гасит develop-экземпляры всех серв
     else
       stop_instance "$svc" # чистка устаревших pid-файлов
     fi
+    local n
+    for n in $(bg_instance_names "$svc"); do
+      [ -z "$(inst_sfx "$n")" ] || continue
+      if instance_running "$n"; then
+        stop_instance "$n"
+        info "$n остановлен"
+      else
+        stop_instance "$n" # чистка устаревших pid-файлов
+      fi
+    done
   done
   if [ "$any" = "1" ] && docker ps --format '{{.Names}}' | grep -qx envoy; then
     envoy_rewrite_backends_live
@@ -962,6 +1091,7 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
       elif [ "$moved" = "0" ]; then
         info "svc switch: $svc уже на '$tgt'"
       fi
+      [ "$moved" = "1" ] && [ "$kind" = "go" ] && stop_develop_bg "$svc"
       if [ "$kind" = "gateway" ]; then
         envoy_render_from "$repo"
         info "switch: $svc — применён конфиг из чекаута ('$tgt')"
@@ -981,6 +1111,7 @@ cmd_svc_switch() { # [<branch>] [--fetch] — переключить основ�
       stopped=1
       info "svc switch: $svc — экземпляр остановлен перед switch"
     fi
+    [ "$kind" = "go" ] && stop_develop_bg "$svc"
     if ! out="$(git -C "$repo" switch "$tgt" 2>&1)"; then
       info "svc switch: $svc — git switch '$tgt' отклонил:"
       printf '%s\n' "$out" | sed 's/^/    /'
@@ -1070,17 +1201,34 @@ cmd_svc_status() {
         printf '%-24s %-6s %-8s %-18s %s\n' "$inst" "$port" "-" "$branch" "остановлен"
       fi
     done
+    for inst in $(bg_instance_names "$svc"); do
+      local bsfx bsrc bbranch bport
+      bsfx="$(inst_sfx "$inst")"
+      bsrc="$UPL_HOME/services/$(svc_repo "$svc")"
+      [ -n "$bsfx" ] && bsrc="$(worktree_path "$svc" "$bsfx")"
+      bport="$(proc_port "$svc" "$(inst_proc "$inst")")"
+      bbranch="-"
+      if [ -d "$bsrc" ]; then
+        bbranch="$(git -C "$bsrc" branch --show-current 2>/dev/null || true)"
+        [ -n "$bbranch" ] || bbranch="(detached)"
+      fi
+      if instance_running "$inst"; then
+        printf '%-24s %-6s %-8s %-18s %s\n' "$inst" "$bport" "$(cat "$(pidfile "$inst")")" "$bbranch" "запущен"
+      else
+        printf '%-24s %-6s %-8s %-18s %s\n' "$inst" "$bport" "-" "$bbranch" "остановлен"
+      fi
+    done
   done
 }
 
 cmd_svc_logs() {
-  local svc="$1"; shift; local sfx=""
-  while [ $# -gt 0 ]; do case "$1" in --task) sfx="$(task_suffix "$2")"; shift 2;; *) shift;; esac; done
+  local svc="$1"; shift; local sfx="" proc="api"
+  while [ $# -gt 0 ]; do case "$1" in --task) sfx="$(task_suffix "$2")"; shift 2;; --proc) proc="$2"; shift 2;; *) shift;; esac; done
   if [ "$(svc_kind "$svc")" = "gateway" ]; then
     docker logs --tail 200 -f "$svc"
     return
   fi
-  local name="$svc"; [ -n "$sfx" ] && name="$svc-$sfx"
+  local name; name="$(instance_name "$svc" "$sfx" "$proc")"
   tail -n 200 -f "$(logfile "$name")"
 }
 
@@ -1190,6 +1338,50 @@ accept_affected() { # <sfx> → затронутые сервисы задачи
   echo "$affected"
 }
 
+task_src() { # <svc> <sfx> -> дерево кода задачного экземпляра: worktree или чекаут на ветке задачи
+  local wt repo
+  wt="$(worktree_path "$1" "$2")"
+  if [ -d "$wt" ]; then printf '%s' "$wt"; return 0; fi
+  repo="$UPL_HOME/services/$(svc_repo "$1")"
+  [ "$(git -C "$repo" branch --show-current 2>/dev/null | tr '[:upper:]' '[:lower:]')" = "feature/upl-$2" ] && printf '%s' "$repo"
+}
+
+# Фоновые процессы, чей код меняет задача: изменённый файл лежит в пакете
+# сборки cmd/<proc> (go list -deps), либо задача меняет go.mod, go.sum,
+# configs/.env.example или несёт свои миграции: процесс задачи работает в её
+# БД, а develop-процесс этой БД не видит. Без origin/develop или без списка
+# пакетов процесс считается затронутым: лишний запуск безопаснее пропущенного.
+task_bg_procs() { # <дерево задачи> -> затронутые фоновые процессы через пробел
+  local src="$1" procs p changed mod pkgs f d hit
+  procs="$(svc_bg_procs "$src")"
+  [ -n "$procs" ] || return 0
+  if ! git -C "$src" rev-parse -q --verify origin/develop >/dev/null 2>&1; then
+    printf '%s' "$procs"; return 0
+  fi
+  changed="$( { git -C "$src" diff --name-only --no-renames origin/develop...HEAD
+                git -C "$src" diff --name-only --no-renames HEAD
+                git -C "$src" ls-files -o --exclude-standard; } 2>/dev/null | sort -u )"
+  [ -n "$changed" ] || return 0
+  if printf '%s\n' "$changed" | grep -Eq '^(go\.mod|go\.sum|configs/\.env\.example|migrations/)'; then
+    printf '%s' "$procs"; return 0
+  fi
+  mod="$(cd "$src" && GOWORK=off GOPROXY=off go list -m 2>/dev/null)"
+  for p in $procs; do
+    pkgs="$(cd "$src" && GOWORK=off GOPROXY=off go list -e -deps -f '{{.ImportPath}}' "./cmd/$p" 2>/dev/null)"
+    if [ -z "$mod" ] || [ -z "$pkgs" ]; then printf '%s ' "$p"; continue; fi
+    hit=0
+    while IFS= read -r f; do
+      case "$f" in *_test.go) continue ;; esac
+      d="$(dirname "$f")"
+      if [ "$d" = "." ]; then d="$mod"; else d="$mod/$d"; fi
+      if printf '%s\n' "$pkgs" | grep -qxF "$d"; then hit=1; break; fi
+    done <<EOF
+$changed
+EOF
+    [ "$hit" = "1" ] && printf '%s ' "$p"
+  done
+}
+
 cmd_accept() { # <UPL-XXXX>
   local key="$1"; [ -n "${key:-}" ] || die "accept: укажи ключ задачи"
   local sfx; sfx="$(task_suffix "$key")"; [ -n "$sfx" ] || die "accept: не распознал суффикс в '$key'"
@@ -1205,6 +1397,18 @@ cmd_accept() { # <UPL-XXXX>
     # gateway: экземпляра на хосте нет, cmd_svc_up сам рендерит конфиг и держит контейнер.
     instance_running "$svc-$sfx" && stop_instance "$svc-$sfx"
     cmd_svc_up "$svc" --task "$key"
+  done
+  # Фоновые процессы задачи: те, чей код она меняет (task_bg_procs).
+  local p tsrc bg_started=""
+  for svc in $affected; do
+    [ "$(svc_kind "$svc")" = "go" ] || continue
+    tsrc="$(task_src "$svc" "$sfx")"
+    [ -n "$tsrc" ] || continue
+    for p in $(task_bg_procs "$tsrc"); do
+      instance_running "$(instance_name "$svc" "$sfx" "$p")" && stop_instance "$(instance_name "$svc" "$sfx" "$p")"
+      cmd_svc_up "$svc" --task "$key" --proc "$p"
+      bg_started="$bg_started $(instance_name "$svc" "$sfx" "$p")"
+    done
   done
   case " $affected " in
     *" envoy "*) ;; # конфиг задачи уже отрендерен cmd_svc_up envoy
@@ -1292,6 +1496,9 @@ PY
         info "• $svc: http://localhost:$port/swagger/index.html - изменённые: $methods" ;;
     esac
   done
+  for p in $bg_started; do
+    info "• $p: фоновый процесс задачи, порт health/metrics $(proc_port "${p%%.*}" "$(inst_proc "$p")")"
+  done
 }
 
 # ── task close ───────────────────────────────────────────────────────────────
@@ -1300,11 +1507,11 @@ cmd_task_close() { # <UPL-XXXX>
   local key="$1"; [ -n "${key:-}" ] || die "task close: укажи ключ задачи"
   local sfx; sfx="$(task_suffix "$key")"; [ -n "$sfx" ] || die "task close: не распознал суффикс в '$key'"
 
-  local svc wt repo dbname dbh touched=""
+  local svc wt repo dbname dbh touched="" p
   for svc in $ALL_SERVICES; do
     wt="$(worktree_path "$svc" "$sfx")"
     repo="$UPL_HOME/services/$(svc_repo "$svc")"
-    [ -d "$wt" ] || [ -e "$(pidfile "$svc-$sfx")" ] || continue
+    [ -d "$wt" ] || [ -e "$(pidfile "$svc-$sfx")" ] || compgen -G "$RT/run/$svc.*-$sfx.pid" >/dev/null || continue
     touched="$touched $svc"
     dbh="$(svc_dbhost "$svc" 2>/dev/null || true)"
     dbname="$(svc_dbname "$svc")_$sfx"
@@ -1324,8 +1531,9 @@ cmd_task_close() { # <UPL-XXXX>
       fi
     fi
 
-    # 2. Останов экземпляра задачи.
+    # 2. Останов экземпляров задачи: api и фоновых процессов.
     stop_instance "$svc-$sfx" 2>/dev/null
+    for p in $BG_PROCS; do stop_instance "$svc.$p-$sfx" 2>/dev/null; done
 
     # 3. БД задачи.
     [ -n "$dbh" ] && { drop_db "$dbh" "$dbname" && info "$svc: БД $dbname удалена"; }

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Регресс-тест upl-infra.sh svc switch / gateway-путей (envoy в реестре).
 # Автономный: строит свой sandbox в /tmp (фейковые git-репозитории), сеть и
-# docker не нужны. Прогон ~5 c. Запуск: bash test_upl_infra_switch.sh
+# docker не нужны; п. 10 вызывает go list по локальному модулю. Прогон ~15 c.
+# Запуск: bash test_upl_infra_switch.sh
 #
 # Покрывает регрессии:
 #   - основная ветка репозитория: develop, если есть, иначе канон (master/main);
@@ -11,6 +12,9 @@
 #   - svc up envoy / svc up envoy --task рендерят конфиг из чекаута/worktree
 #   - refresh_peers: сменившийся адрес пира перезапускает разв-экземпляр
 #     и уже поднятый задачный экземпляр
+#   - фоновые процессы: accept считает затронутыми процессы, в пакеты сборки
+#     которых попал diff задачи; второй экземпляр процесса отклоняется;
+#     refresh_peers и task close обрабатывают экземпляры фоновых процессов
 set -u
 SCR="$(cd "$(dirname "$0")" && pwd)/upl-infra.sh"
 SB="$(mktemp -d "${TMPDIR:-/tmp}/upl-infra-test.XXXXXX")"
@@ -202,6 +206,71 @@ kill "$USER999PID" 2>/dev/null; rm -f "$RT/run/user-999.pid"
 echo "9. svc status содержит gateway-строку"
 UPL_HOME=$SB bash "$SCR" svc status 2>&1 | grep -q "^envoy" \
   && echo "ok: envoy в status" || { echo "FAIL: envoy не в status"; FAILURES=$((FAILURES+1)); }
+
+echo "10. фоновые процессы: затронутые задачей - по пакетам сборки cmd/<proc>"
+RS="$SB/services/report-service"
+mkgit "$RS" develop
+mkdir -p "$RS/cmd/api" "$RS/cmd/consumer" "$RS/internal/worker" "$RS/internal/handler" "$RS/configs"
+printf 'module example.com/report\n\ngo 1.21\n' > "$RS/go.mod"
+printf 'package main\n\nimport _ "example.com/report/internal/handler"\n\nfunc main() {}\n' > "$RS/cmd/api/main.go"
+printf 'package main\n\nimport _ "example.com/report/internal/worker"\n\nfunc main() {}\n' > "$RS/cmd/consumer/main.go"
+printf 'package worker\n' > "$RS/internal/worker/worker.go"
+printf 'package handler\n' > "$RS/internal/handler/handler.go"
+printf 'HTTP_PORT=8103\n' > "$RS/configs/.env.example"
+git -C "$RS" add -A; git -C "$RS" commit -qm init
+git init --bare -q "$SB/origin-report.git"
+git -C "$RS" remote add origin "$SB/origin-report.git"
+git -C "$RS" push -q origin develop
+git -C "$RS" branch feature/UPL-999; git -C "$RS" branch feature/UPL-998
+W999="$SB/services/report-service-UPL-999"; W998="$SB/services/report-service-UPL-998"
+git -C "$RS" worktree add -q "$W999" feature/UPL-999
+git -C "$RS" worktree add -q "$W998" feature/UPL-998
+printf 'package worker\n\nconst Changed = 1\n' > "$W999/internal/worker/worker.go"
+git -C "$W999" commit -qam worker
+printf 'package handler\n\nconst Changed = 1\n' > "$W998/internal/handler/handler.go"
+git -C "$W998" commit -qam handler
+BG() { UPL_HOME=$SB bash -c "source '$SB/runner.sh'; task_bg_procs '$1'" 2>&1 | tr -d ' '; }
+ck "изменён пакет сборки consumer - consumer затронут" [ "$(BG "$W999")" = consumer ]
+ck "изменён только пакет api - фоновые процессы не затронуты" [ -z "$(BG "$W998")" ]
+printf 'HTTP_PORT=8103\nKAFKA_TOPIC=t\n' > "$W998/configs/.env.example"
+ck "изменён configs/.env.example - затронуты все фоновые процессы" [ "$(BG "$W998")" = consumer ]
+git -C "$W998" checkout -q -- configs/.env.example
+
+echo "11. фоновый процесс: на стенде один экземпляр процесса (develop или задачи)"
+bash -c 'exec -a "__supervisor report.consumer fake" sleep 60' & BGPID=$!
+echo $BGPID > "$RT/run/report.consumer.pid"
+OLDPATH=$PATH; PATH="$SB/bin:$PATH"
+run svc up report --task UPL-999 --proc consumer
+PATH=$OLDPATH
+ck "второй экземпляр consumer отклонён" [ $RC -ne 0 ]
+ck "отказ называет держателя" bash -c 'printf "%s" "$0" | grep -q "как report.consumer "' "$OUT"
+ck "env задачного consumer не создан" [ ! -e "$RT/env/report.consumer-999.env" ]
+kill "$BGPID" 2>/dev/null; rm -f "$RT/run/report.consumer.pid"
+
+echo "12. refresh_peers: фоновый процесс с устаревшим адресом пира перезапускается"
+mkdir -p "$SB/bin-nodb"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$SB/bin-nodb/docker"
+chmod +x "$SB/bin-nodb/docker"
+bash -c 'exec -a "__supervisor user-999 fake" sleep 60' & USER999PID=$!
+echo $USER999PID > "$RT/run/user-999.pid"
+printf 'USER_SERVICE_BASE_URL=http://localhost:8101\nCONSUMER_PORT=10103\n' > "$RT/env/report.consumer-999.env"
+bash -c 'exec -a "__supervisor report.consumer-999 fake" sleep 60' & FAKEPID=$!
+echo $FAKEPID > "$RT/run/report.consumer-999.pid"
+OUT=$(PATH="$SB/bin-nodb:$PATH" UPL_HOME=$SB bash -c "source '$SB/runner.sh'; refresh_peers user" 2>&1)
+ck "consumer с устаревшим пиром остановлен (рестарт предпринят)" dead "$FAKEPID"
+ck "pidfile consumer снят" [ ! -e "$RT/run/report.consumer-999.pid" ]
+FAKEPID=""
+kill "$USER999PID" 2>/dev/null; rm -f "$RT/run/user-999.pid"
+
+echo "13. task close гасит фоновые процессы задачи"
+bash -c 'exec -a "__supervisor report.consumer-997 fake" sleep 60' & FAKEPID=$!
+echo $FAKEPID > "$RT/run/report.consumer-997.pid"
+OLDPATH=$PATH; PATH="$SB/bin:$PATH"
+run task close UPL-997
+PATH=$OLDPATH
+ck "consumer задачи остановлен" dead "$FAKEPID"
+ck "pidfile consumer задачи снят" [ ! -e "$RT/run/report.consumer-997.pid" ]
+FAKEPID=""
 
 echo
 if [ "$FAILURES" = 0 ]; then echo "ALL PASS"; else echo "FAILED: $FAILURES"; exit 1; fi
