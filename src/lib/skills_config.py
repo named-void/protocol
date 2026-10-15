@@ -173,9 +173,10 @@ def observed_task_keys(repository: Path) -> list[str]:
 
 def allocate_task_key(base: str, path: str | os.PathLike[str] | None = None) -> str:
     """Выделить ключ `<KEY>-<N>` выделенной работе от ключа задачи-источника."""
-    base = base.strip().upper()
-    if not re.fullmatch(r"[A-Z][A-Z0-9]*-[0-9]+", base):
-        raise ConfigError(f"invalid task key base {base!r}: expected a tracker key like UPL-940")
+    key = base.strip().upper()
+    if not re.fullmatch(r"[A-Z][A-Z0-9]*-[0-9]+", key):
+        raise ConfigError(f"invalid task key base {base.strip()!r}: expected a tracker key like UPL-940")
+    base = key
 
     repository = Path(path).expanduser() if path else Path.cwd()
     pattern = re.compile(DERIVED_INDEX_TEMPLATE % re.escape(base))
