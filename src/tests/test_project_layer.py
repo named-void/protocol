@@ -283,14 +283,8 @@ class ProjectLayerTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("UPL-940-6", result.stdout.strip())
 
-    def test_derived_task_key_starts_at_one_without_visible_traces(self) -> None:
+    def test_derived_task_key_rejects_a_directory_name_base(self) -> None:
         result = self.run_cli("allocate-task-key", "ord-service", "--path", str(self.root))
-
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("ord-service-1", result.stdout.strip())
-
-    def test_derived_task_key_rejects_an_unusable_base(self) -> None:
-        result = self.run_cli("allocate-task-key", "9 bad", "--path", str(self.root))
 
         self.assertEqual(1, result.returncode)
         self.assertIn("invalid task key base", result.stderr)

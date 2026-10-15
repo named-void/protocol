@@ -58,11 +58,10 @@ KEY="$1"
 TYPE="$2"
 
 KEY="$(normalize_task_key "$KEY")" \
-  || fail 64 "conflict: invalid task key '$KEY' (expected like ABC-123, ABC-123-1 or repo-1)"
+  || fail 64 "conflict: invalid task key '$KEY' (expected like ABC-123 or ABC-123-1)"
 
 # shellcheck disable=SC2206
 branch_types=(${AGENTS_BRANCH_TYPES:-feature bugfix hotfix})
-is_key_without_tracker_source "$KEY" && branch_types+=(protocol)
 valid_type=false
 for candidate_type in "${branch_types[@]}"; do
   [[ "$TYPE" == "$candidate_type" ]] && valid_type=true && break

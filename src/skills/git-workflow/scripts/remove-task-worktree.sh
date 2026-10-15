@@ -181,7 +181,7 @@ cmd_remove() {
   shift 2
 
   key="$(normalize_task_key "$key")" \
-    || fail 64 "conflict: invalid task key '$key' (expected like ABC-123, ABC-123-1 or repo-1)"
+    || fail 64 "conflict: invalid task key '$key' (expected like ABC-123 or ABC-123-1)"
 
   local worktree_dir="${main_repo_root%/*}/$main_repo_name-$key"
   local branch

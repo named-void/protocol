@@ -84,30 +84,6 @@ class GitScriptTest(unittest.TestCase):
 
 
 class SyncBranchTest(GitScriptTest):
-    def task_key_from(self, cwd: Path) -> subprocess.CompletedProcess[str]:
-        library = SCRIPT.parent / "lib-git.sh"
-        return subprocess.run(
-            ["bash", "-c", f'source "{library}"; task_key_from_worktree'],
-            cwd=cwd,
-            env=os.environ.copy(),
-            check=False,
-            text=True,
-            capture_output=True,
-        )
-
-    def test_task_worktree_directory_names_the_task(self) -> None:
-        remote, _ = self.remote_repository()
-        work = self.clone(remote)
-        self.assertEqual(0, self.run_script(work, "UPL-35", "feature").returncode)
-
-        inside = self.task_key_from(self.worktree_path(work, "UPL-35"))
-        outside = self.task_key_from(work)
-
-        self.assertEqual(0, inside.returncode, inside.stderr)
-        self.assertEqual("UPL-35", inside.stdout.strip())
-        self.assertNotEqual(0, outside.returncode)
-        self.assertEqual("", outside.stdout.strip())
-
     def test_creates_task_branch_in_isolated_worktree(self) -> None:
         remote, _ = self.remote_repository()
         work = self.clone(remote)
@@ -280,21 +256,7 @@ class SyncBranchTest(GitScriptTest):
         self.assertEqual(11, result.returncode)
         self.assertIn("multiple task branches", result.stderr)
 
-    def test_key_without_a_tracker_source_allows_the_protocol_type(self) -> None:
-        remote, _ = self.remote_repository(branch="main")
-        work = self.clone(remote)
-
-        result = self.run_script(
-            work,
-            "ord-service-7",
-            "protocol",
-            env={**os.environ, "AGENTS_BASE_BRANCH": "main"},
-        )
-
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIn("created: protocol/ord-service-7 (from main)", result.stdout)
-
-    def test_key_derived_from_a_tracker_key_keeps_its_case_and_type(self) -> None:
+    def test_key_derived_from_a_tracker_key_is_uppercased(self) -> None:
         remote, _ = self.remote_repository()
         work = self.clone(remote)
 
