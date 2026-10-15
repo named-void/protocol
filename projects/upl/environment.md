@@ -55,6 +55,8 @@
   защищённые методы без сессии отвечают 401. С `user_id` auth ищет пользователя через
   user-service по `USER_SERVICE_BASE_URL` из своего env. Без `user_id` сессия получает синтетического
   пользователя: его нет в БД user-service, портфеля у него нет, и `/auth/validate` не возвращает `X-PUBLISHER-IDS`.
+  Роль и привязки сессии видно по заголовкам ответа `/auth/validate` с этой сессией: `X-User-Role`, `X-ADVERTISER-IDS`, `X-PUBLISHER-IDS`.
+  Отсутствие `X-ADVERTISER-IDS` или `X-PUBLISHER-IDS` в ответе означает пустой список привязок, а не сбой.
   Адреса пиров в разв-экземплярах актуализирует сам `upl-infra.sh`: `svc up/down <svc> --task UPL-XXXX` и `task close` перерендеривают env задетых разв-экземпляров и перезапускают их; ручной перезапуск не нужен.
   Роль бери с реальным доступом к проверяемому методу: у `reg` почти нет доступов, у `super_admin` почти всё;
   доступы смотри в `role_permission` БД auth (контейнер `db`).
@@ -64,6 +66,9 @@
   значение ключа, регэкспы требуют полного совпадения значения.
   Задача с bff-блоком в `aggregation.yaml` обязана включать правило envoy (см. профиль upl-services) -
   отсутствие правила ловит только этот прогон.
+- Защищённые сессией маршруты и пересылку бэкенду заголовков актора объявляет SecurityPolicy require-auth в `services/envoy/config/security.yaml`.
+  Пока HTTPRoute report не входит в require-auth, запросы к защищённым методам report через шлюз доходят до сервиса без заголовков актора и отвечают 401.
+  Поэтому экспорты report проверяй прямым вызовом экземпляра с подставными заголовками актора: `X-User-ID`, `X-User-Role`, `X-ADVERTISER-IDS`, `X-PUBLISHER-IDS`.
 - `final-checks.sh` для проверки миграций берёт контейнер из `DB_CONTAINER`,
   иначе находит общий postgres `db` стенда сам.
 - Креды и туннель develop-postgres: `projects/upl/.data/config.toml`, секция `[develop_db]`
