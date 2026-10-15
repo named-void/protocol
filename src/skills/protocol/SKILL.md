@@ -151,7 +151,7 @@ Issue tracker в protocol используй только для чтения.
 
 `state.md` состоит из четырёх частей:
 
-1. Состояние: `status` (`define`, `implement`, `accept`, `completed` или `blocked`), `task`, `next` (одна строка с первым действием следующей сессии), `cycle` и его `kind`.
+1. Состояние: `status` (`define`, `implement`, `accept`, `completed` или `blocked`), `task`, `next` (одна строка с первым действием следующей сессии), `cycle`, его `kind` и `depth` (`full` или `lite`, раздел "Облегчённый цикл").
    Для каждого репозитория блок `### repo: <имя>` со строками `- <поле>: <значение>`: `work_root`, `branch`, `isolation` (`worktree` или `checkout`), `base`, `candidate`, `checked_candidate`, `checked_tree`.
    `checked_candidate` и `checked_tree` описывают последний снимок, принятый проходом checker: меняй их только на шаге 5 финализации прохода (`references/accept.md`) и в ветке hash-only Git-финализации (`git-lifecycle.md`).
    Правка в `implement` меняет только `candidate`.
@@ -240,6 +240,18 @@ Issue tracker в protocol используй только для чтения.
 Контекст выделенной задачи бери из `state.md` и итераций, указанных в `origin`; базу определяй Branch-Sync по `origin` (`git-lifecycle.md`), а не по текущей ветке.
 
 Ветка выделенной задачи растёт от task-ветки источника, пока та не влита в базовую ветку проекта (`git-lifecycle.md`); фактическую базу запиши как `depends_on`.
+
+### Облегчённый цикл
+
+Цикл получает `depth: lite`, если у задачи есть `checked_candidate` и выполнены все условия:
+
+- затронут один репозиторий;
+- не меняются публичный контракт, схема данных, зависимости и права доступа;
+- не выполняется ни одно условие создания `plan.md` (раздел "Define");
+- diff цикла не больше 5 файлов и 50 строк.
+
+Иначе, а также по просьбе пользователя цикл получает `depth: full`. При открытии цикла назови пользователю `depth` одной строкой.
+  Если при сверке `base..candidate` в Implement условия нарушены, переведи цикл в `full` до прохода checker; из `full` в `lite` цикл не переводи.
 
 ### Реестр findings
 
