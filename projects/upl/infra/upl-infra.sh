@@ -38,7 +38,8 @@
 #   doctor
 #
 # Смена задачных экземпляров (svc up/down --task, task close) сама перерендеривает
-# env и перезапускает разв-экземпляры, чей адрес пира сменился.
+# env и перезапускает задетые экземпляры: разв- и уже поднятые задачные,
+# чей адрес пира сменился.
 set -u
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -104,7 +105,7 @@ svc_base_branch() { # <svc> → основная ветка: develop, если �
 }
 
 # Пиры сервиса: чьи URL входят в его env (см. render_env). Используется
-# refresh_dev_peers для рестарта задетых разв-экземпляров.
+# refresh_peers для рестарта задетых экземпляров (разв- и задачных).
 svc_peers() {
   case "$1" in
     auth) echo user ;;
@@ -313,10 +314,10 @@ render_env() { # <svc> <src-dir> <env-path-out> <http-port> <db-name> [task 0|1]
   esac
 }
 
-# A1: env разв-экземпляра фиксирует адреса пиров на старте. Смена задачных
-# экземпляров (up/down/close) меняет live_port пира — задетые разв-экземпляры
+# A1: env экземпляра фиксирует адреса пиров на старте. Смена задачных
+# экземпляров (up/down/close) меняет live_port пира, и задетые экземпляры
 # (те, чей env ссылается на изменённый сервис) перерендериваются и рестартуют.
-refresh_dev_peers() { # <svc>... — сервисы, чьи задачные экземпляры сменились
+refresh_peers() { # <svc>... — сервисы, чьи задачные экземпляры сменились
   [ $# -gt 0 ] || return 0
   local d c need tmp
   for d in $KNOWN_SERVICES; do
@@ -336,6 +337,33 @@ refresh_dev_peers() { # <svc>... — сервисы, чьи задачные э�
     info "$d: адрес пира сменился — перезапускаю с обновлённым env"
     stop_instance "$d"
     ( cmd_svc_up "$d" ) || info "$d: не поднялся после перерендера — подними вручную: svc up $d"
+  done
+  # Задачные экземпляры (STAND-TASK-PEER-ENV): подъём/снятие пир-экземпляра
+  # задачи меняет live_port и для уже поднятых задачных
+  # (подъём user-<N> при живых auth-<N>, report-<N>). Рендер-кандидат здесь
+  # не воспроизвести: источник и БД задачного вычисляет только cmd_svc_up,
+  # поэтому устаревание определяется по факту: в env нет текущего live-адреса
+  # пира. Перезапуск идёт через cmd_svc_up, env перерендеривается целиком.
+  local name sfx stale
+  for d in $KNOWN_SERVICES; do
+    for name in $(instance_names "$d"); do
+      case "$name" in "$d"-*) ;; *) continue ;; esac
+      instance_running "$name" || continue
+      [ -f "$(envfile "$name")" ] || continue
+      need=0; stale=0
+      for c in "$@"; do
+        case " $(svc_peers "$d" 2>/dev/null) " in *" $c "*)
+          need=1
+          grep -Eq "http://localhost:$(live_port "$c")([^0-9]|\$)" "$(envfile "$name")" || stale=1 ;;
+        esac
+      done
+      { [ "$need" = "1" ] && [ "$stale" = "1" ]; } || continue
+      sfx="${name##*-}"
+      info "$name: адрес пира сменился — перезапускаю с обновлённым env"
+      stop_instance "$name"
+      ( cmd_svc_up "$d" --task "UPL-$sfx" ) \
+        || info "$name: не поднялся после перерендера — подними вручную: svc up $d --task UPL-$sfx"
+    done
   done
 }
 
@@ -764,7 +792,7 @@ cmd_svc_up() { # <svc> [task-key|branch/suffix opts] [proc]
   if docker ps --format '{{.Names}}' | grep -qx envoy; then
     envoy_rewrite_backends_live # живые инстансы поменялись — file provider перечитает
   fi
-  [ "$inst_task" = "1" ] && refresh_dev_peers "$svc" # A1: зависимые разв-экземпляры на новый адрес пира
+  [ "$inst_task" = "1" ] && refresh_peers "$svc" # A1: разв- и поднятые задачные на новый адрес пира
   info "$name поднят: порт $port${dbname:+, БД $dbname}, лог $(logfile "$name")"
 }
 
@@ -792,7 +820,7 @@ cmd_svc_down() {
   if docker ps --format '{{.Names}}' | grep -qx envoy; then
     envoy_rewrite_backends_live
   fi
-  [ -n "$sfx" ] && refresh_dev_peers "$svc" # A1: пиры возвращаются на develop-адрес
+  [ -n "$sfx" ] && refresh_peers "$svc" # A1: пиры возвращаются на develop-адрес
   info "$name остановлен"
 }
 
@@ -1318,7 +1346,7 @@ cmd_task_close() { # <UPL-XXXX>
     fi
   done
 
-  refresh_dev_peers $touched # A1: задачные экземпляры сняты — пиры на develop-адреса
+  refresh_peers $touched # A1: задачные экземпляры сняты — пиры на develop-адреса
   envoy_render_base
   docker ps --format '{{.Names}}' | grep -qx envoy && sleep 2
   info "задача $key закрыта"

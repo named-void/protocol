@@ -9,7 +9,8 @@
 #   - чекаут gateway (envoy) не переключается на задачную ветку: конфиг из worktree
 #   - грязный чекаут блокирует смену ветки отказом всей команды
 #   - svc up envoy / svc up envoy --task рендерят конфиг из чекаута/worktree
-#   - refresh_dev_peers: сменившийся адрес пира перезапускает разв-экземпляр
+#   - refresh_peers: сменившийся адрес пира перезапускает разв-экземпляр
+#     и уже поднятый задачный экземпляр
 set -u
 SCR="$(cd "$(dirname "$0")" && pwd)/upl-infra.sh"
 SB="$(mktemp -d "${TMPDIR:-/tmp}/upl-infra-test.XXXXXX")"
@@ -159,16 +160,37 @@ ck "worktree 999 снят"   [ ! -d "$SB/services/envoy-UPL-999" ]
 ck "неслитая в master ветка оставлена" git -C "$SB/services/envoy" show-ref --verify -q "refs/heads/feature/UPL-999"
 ck "отказ назвал канон master" bash -c 'printf "%s" "$0" | grep -q "не слита в master"' "$OUT"
 
-echo "8. refresh_dev_peers: сменившийся пир → рестарт разв-экземпляра"
+echo "8. refresh_peers: сменившийся пир → рестарт разв-экземпляра"
 mkdir -p "$RT/run" "$RT/env" "$RT/log"
 printf 'USER_SERVICE_BASE_URL=http://localhost:9101\nHTTP_PORT=8100\n' > "$RT/env/auth.env"
 bash -c 'exec -a "__supervisor auth fake" sleep 60' & FAKEPID=$!
 echo $FAKEPID > "$RT/run/auth.pid"
 sed '/^case "${1:-}" in/,$d' "$SCR" > "$SB/runner.sh"
-OUT=$(UPL_HOME=$SB bash -c "source '$SB/runner.sh'; refresh_dev_peers user" 2>&1)
+OUT=$(UPL_HOME=$SB bash -c "source '$SB/runner.sh'; refresh_peers user" 2>&1)
 ck "устаревший экземпляр остановлен (рестарт предпринят)" dead "$FAKEPID"
 ck "pidfile снят" [ ! -e "$RT/run/auth.pid" ]
 FAKEPID=""
+
+echo "8b. refresh_peers: подъём задачного пира → рестарт живого задачного экземпляра"
+# Регрессия STAND-TASK-PEER-ENV: auth-999 поднят с адресом develop-user (8101),
+# появляется user-999 (live 9101) — env auth-999 должен перерендериться (рестарт).
+bash -c 'exec -a "__supervisor user-999 fake" sleep 60' & USER999PID=$!
+echo $USER999PID > "$RT/run/user-999.pid"
+printf 'USER_SERVICE_BASE_URL=http://localhost:8101\nHTTP_PORT=9100\n' > "$RT/env/auth-999.env"
+bash -c 'exec -a "__supervisor auth-999 fake" sleep 60' & FAKEPID=$!
+echo $FAKEPID > "$RT/run/auth-999.pid"
+OUT=$(UPL_HOME=$SB bash -c "source '$SB/runner.sh'; refresh_peers user" 2>&1)
+ck "задачный экземпляр с устаревшим пиром остановлен (рестарт предпринят)" dead "$FAKEPID"
+ck "pidfile задачного снят" [ ! -e "$RT/run/auth-999.pid" ]
+FAKEPID=""
+# Обратная ветка: env уже содержит живой адрес пира 9101 — рестарта нет
+bash -c 'exec -a "__supervisor auth-999 fake" sleep 60' & FAKEPID=$!
+echo $FAKEPID > "$RT/run/auth-999.pid"
+printf 'USER_SERVICE_BASE_URL=http://localhost:9101\nHTTP_PORT=9100\n' > "$RT/env/auth-999.env"
+OUT=$(UPL_HOME=$SB bash -c "source '$SB/runner.sh'; refresh_peers user" 2>&1)
+ck "свежий env задачного не перезапускается" alive "$FAKEPID"
+FAKEPID=""
+kill "$USER999PID" 2>/dev/null; rm -f "$RT/run/user-999.pid"
 
 echo "9. svc status содержит gateway-строку"
 UPL_HOME=$SB bash "$SCR" svc status 2>&1 | grep -q "^envoy" \
