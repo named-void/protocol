@@ -4,6 +4,9 @@
 Takes a Jira URL or issue key, finds `<DATA_ROOT>/tasks/<KEY>/state.md`, task worktrees,
 local and remote-tracking branches under the project roots, and proposes a route:
 `continue`, `next-cycle`, `ambiguous` or `new`.
+For a task with `status: completed` the output also carries `brief`: per repository the
+publish inputs (`base`, `candidate`, `branch`, `depends_on`) and whether the task diff
+touches `migrations/`.
 
 Exit codes: 0 inventory printed, 2 the issue does not resolve to a project.
 """
@@ -28,7 +31,7 @@ import skills_config
 
 CONTINUABLE = ("define", "implement", "accept", "blocked")
 STATE_FIELDS = ("status", "task", "next", "cycle", "kind", "mr", "origin", "spawned")
-REPO_FIELDS = ("work_root", "branch", "isolation", "base", "candidate", "checked_candidate", "checked_tree")
+REPO_FIELDS = ("work_root", "branch", "isolation", "base", "candidate", "checked_candidate", "checked_tree", "depends_on")
 SCAN_DEPTH = 3
 SHA = re.compile(r"[0-9a-f]{7,40}")
 SKIPPED_DIRS = {"node_modules", "vendor", ".git"}
@@ -172,6 +175,61 @@ def scan_repository(repository: Path, pattern: re.Pattern[str]) -> dict[str, Any
     }
 
 
+def task_migrations(repository: str | None, fields: dict[str, str]) -> bool | None:
+    """True when the task diff changes `migrations/`; None without a resolvable base...candidate.
+
+    Runs in the main checkout: after completion the task worktree is removed, its branch is not.
+    """
+    if not repository:
+        return None
+    base = (fields.get("base") or "").split(" ", 1)[0]
+    candidate = (fields.get("candidate") or "").split(" ", 1)[0]
+    if not (base and candidate):
+        return None
+    completed = subprocess.run(
+        ["git", "-C", repository, "diff", "--name-only", f"{base}...{candidate}", "--", "migrations"],
+        text=True, capture_output=True, check=False,
+    )
+    return None if completed.returncode != 0 else bool(completed.stdout.strip())
+
+
+def owning_repository(
+    work_root: str | None, name: str, found: list[dict[str, Any]], key: str
+) -> dict[str, Any] | None:
+    """Main checkout owning the task worktree; the branch alone is ambiguous across services.
+
+    A live worktree is matched by path, a removed one by the `<repo>-<KEY>` sibling convention.
+    """
+    if work_root:
+        work = str(Path(work_root).resolve())
+        for item in found:
+            main = Path(item["repository"])
+            linked = [str(Path(tree["path"]).resolve()) for tree in item["worktrees"]]
+            sibling = str((main.parent / f"{main.name}-{key}").resolve())
+            if work in linked or work == sibling:
+                return item
+    return next((item for item in found if Path(item["repository"]).name == name), None)
+
+
+def brief(state: dict[str, Any], found: list[dict[str, Any]], key: str) -> dict[str, Any]:
+    """Publish inputs of a completed task: per repository base, candidate, branch, dependencies, migrations."""
+    repositories = []
+    for name, fields in state["repositories"].items():
+        entry = owning_repository(fields.get("work_root"), name, found, key)
+        repositories.append(
+            {
+                "name": name,
+                "work_root": fields.get("work_root"),
+                "branch": fields.get("branch"),
+                "base": fields.get("base"),
+                "candidate": fields.get("candidate"),
+                "depends_on": fields.get("depends_on"),
+                "migrations": task_migrations(entry["repository"] if entry else None, fields),
+            }
+        )
+    return {"repositories": repositories}
+
+
 def propose(state: dict[str, Any] | None, found: list[dict[str, Any]]) -> tuple[str, list[str]]:
     if state is None:
         if found:
@@ -207,7 +265,7 @@ def inventory(value: str) -> dict[str, Any]:
     roots = [Path(root) for root in issue["project_roots"]]
     found = [item for item in (scan_repository(path, pattern) for path in main_checkouts(roots)) if item]
     route, reasons = propose(state, found)
-    return {
+    result = {
         "key": key,
         "url": issue["url"],
         "project": issue["project"],
@@ -218,6 +276,9 @@ def inventory(value: str) -> dict[str, Any]:
         "route": route,
         "reasons": reasons,
     }
+    if state is not None and state.get("status") == "completed":
+        result["brief"] = brief(state, found, key)
+    return result
 
 
 def main() -> int:

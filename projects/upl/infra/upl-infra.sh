@@ -32,7 +32,9 @@
 #   svc up --task UPL-XXXX — задачные экземпляры ветки сразу для всех сервисов,
 #                       где она есть (чекаут или worktree), включая конфиг envoy
 #   seed catalog
-#   accept <UPL-XXXX>
+#   accept <UPL-XXXX> — поднимает экземпляры всех затронутых задачей сервисов:
+#                       по worktree, живому экземпляру или task-ветке (стенд
+#                       завершённой задачи поднимается из её ветки заново)
 #   task close <UPL-XXXX>
 #   dev sync|check  — синхронизация/отчёт локальных БД с develop postgres (read-only)
 #   doctor
@@ -1175,20 +1177,28 @@ PY
   echo "$res"
 }
 
+accept_affected() { # <sfx> → затронутые сервисы задачи: worktree, живой экземпляр или task-ветка.
+  # Ветка переживает завершение задачи и снятие worktree, поэтому по ней поднимается
+  # и приёмка уже завершённой задачи (например, стенды из инвентаризации).
+  local svc sfx="$1" affected=""
+  for svc in $ALL_SERVICES; do
+    if [ -d "$(worktree_path "$svc" "$sfx")" ] || instance_running "$svc-$sfx" \
+      || git -C "$UPL_HOME/services/$(svc_repo "$svc")" show-ref --verify -q "refs/heads/feature/UPL-$sfx" 2>/dev/null; then
+      affected="$affected $svc"
+    fi
+  done
+  echo "$affected"
+}
+
 cmd_accept() { # <UPL-XXXX>
   local key="$1"; [ -n "${key:-}" ] || die "accept: укажи ключ задачи"
   local sfx; sfx="$(task_suffix "$key")"; [ -n "$sfx" ] || die "accept: не распознал суффикс в '$key'"
   mkdir -p "$RT/env" "$RT/log" "$RT/run"
   cmd_infra up
 
-  local svc wt affected=""
-  for svc in $ALL_SERVICES; do
-    wt="$(worktree_path "$svc" "$sfx")"
-    if [ -d "$wt" ] || instance_running "$svc-$sfx"; then
-      affected="$affected $svc"
-    fi
-  done
-  [ -n "$(echo "$affected" | tr -d ' ')" ] || { info "нет затронутых сервисов задачи $key (нет worktree и экземпляров)"; return 0; }
+  local svc affected
+  affected="$(accept_affected "$sfx")"
+  [ -n "$(echo "$affected" | tr -d ' ')" ] || { info "нет затронутых сервисов задачи $key (нет worktree, экземпляра или task-ветки)"; return 0; }
 
   for svc in $affected; do
     # Автоцикла нет: поднятый экземпляр задачи гасим, чтобы accept поднял актуальный код.

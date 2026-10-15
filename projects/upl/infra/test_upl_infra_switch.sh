@@ -160,6 +160,13 @@ ck "worktree 999 снят"   [ ! -d "$SB/services/envoy-UPL-999" ]
 ck "неслитая в master ветка оставлена" git -C "$SB/services/envoy" show-ref --verify -q "refs/heads/feature/UPL-999"
 ck "отказ назвал канон master" bash -c 'printf "%s" "$0" | grep -q "не слита в master"' "$OUT"
 
+echo "7d. accept_affected: завершённая задача без worktree - затронутые сервисы по task-ветке"
+OUT=$(UPL_HOME=$SB bash -c "source '$SB/runner.sh'; accept_affected 999" 2>&1)
+ck "envoy и user найдены по веткам" bash -c 'printf "%s" "$0" | grep -qw envoy && printf "%s" "$0" | grep -qw user' "$OUT"
+ck "auth без ветки не затронут" bash -c '! printf "%s" "$0" | grep -qw auth' "$OUT"
+OUT=$(UPL_HOME=$SB bash -c "source '$SB/runner.sh'; accept_affected 777" 2>&1)
+ck "ключ без ветки и worktree не даёт сервисов" [ -z "$(echo "$OUT" | tr -d ' ')" ]
+
 echo "8. refresh_peers: сменившийся пир → рестарт разв-экземпляра"
 mkdir -p "$RT/run" "$RT/env" "$RT/log"
 printf 'USER_SERVICE_BASE_URL=http://localhost:9101\nHTTP_PORT=8100\n' > "$RT/env/auth.env"

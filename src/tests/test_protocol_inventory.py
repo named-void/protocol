@@ -82,6 +82,85 @@ class ProtocolInventoryTest(unittest.TestCase):
         (self.tasks / "UPL-5" / "state.md").write_text("## Состояние\n\n- status: completed\n", encoding="utf-8")
         self.assertEqual("next-cycle", self.run_inventory("UPL-5")["route"])
 
+    def test_completed_state_brief_carries_publish_inputs(self) -> None:
+        (self.worktree / "migrations").mkdir()
+        (self.worktree / "migrations" / "001_init.up.sql").write_text("select 1;\n", encoding="utf-8")
+        git(self.worktree, "add", "-A")
+        git(self.worktree, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-qm", "migrations")
+        candidate = subprocess.run(
+            ["git", "-C", str(self.worktree), "rev-parse", "HEAD"], text=True, capture_output=True, check=True
+        ).stdout.strip()
+        self.write_state(
+            "UPL-5", "completed", f"- base: main\n- candidate: {candidate}\n- depends_on: auth-service\n"
+        )
+
+        output = self.run_inventory("UPL-5")
+
+        self.assertEqual("next-cycle", output["route"])
+        [repository] = output["brief"]["repositories"]
+        self.assertEqual(
+            ("svc", "main", candidate, "auth-service", True),
+            (
+                repository["name"],
+                repository["base"],
+                repository["candidate"],
+                repository["depends_on"],
+                repository["migrations"],
+            ),
+        )
+
+    def test_brief_matches_owning_repository_when_branches_are_identical(self) -> None:
+        def head(work: Path) -> str:
+            return subprocess.run(
+                ["git", "-C", str(work), "rev-parse", "HEAD"], text=True, capture_output=True, check=True
+            ).stdout.strip()
+
+        second = self.checkouts / "services" / "svc2"
+        second.mkdir(parents=True)
+        git(second, "init", "-q", "-b", "main")
+        git(second, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init")
+        second_worktree = self.checkouts / "services" / "svc2-UPL-5"
+        git(second, "worktree", "add", "-q", "-b", "feature/UPL-5", str(second_worktree))
+        # Уникальный candidate svc2: совпадающий пустой init не отличил бы чужой репозиторий.
+        (second_worktree / "unique.txt").write_text("svc2\n", encoding="utf-8")
+        git(second_worktree, "add", "-A")
+        git(second_worktree, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-qm", "svc2 unique")
+        (self.worktree / "migrations").mkdir()
+        (self.worktree / "migrations" / "001_init.up.sql").write_text("select 1;\n", encoding="utf-8")
+        git(self.worktree, "add", "-A")
+        git(self.worktree, "-c", "user.email=t@e.test", "-c", "user.name=t", "commit", "-qm", "migrations")
+        # Одинаковая ветка в обоих сервисах; worktree второго снят, как у завершённой задачи.
+        svc2_candidate = head(second_worktree)
+        git(second, "worktree", "remove", str(second_worktree))
+        task_dir = self.tasks / "UPL-5"
+        task_dir.mkdir(parents=True, exist_ok=True)
+        (task_dir / "state.md").write_text(
+            "# UPL-5\n\n## Состояние\n\n- status: completed\n- next:\n\n"
+            f"### repo: svc\n\n- work_root: {self.worktree}\n- branch: feature/UPL-5\n"
+            f"- base: main\n- candidate: {head(self.worktree)}\n\n"
+            f"### repo: svc2\n\n- work_root: {second_worktree}\n- branch: feature/UPL-5\n"
+            f"- base: main\n- candidate: {svc2_candidate}\n",
+            encoding="utf-8",
+        )
+
+        brief = self.run_inventory("UPL-5")["brief"]["repositories"]
+
+        self.assertEqual(
+            [("svc", True), ("svc2", False)],
+            [(item["name"], item["migrations"]) for item in brief],
+        )
+
+    def test_brief_reports_unknown_migrations_without_resolvable_range(self) -> None:
+        self.write_state("UPL-5", "completed", "- base: absent-base\n- candidate: deadbeef\n")
+
+        [repository] = self.run_inventory("UPL-5")["brief"]["repositories"]
+        self.assertIsNone(repository["migrations"])
+
+    def test_brief_is_absent_for_incomplete_state(self) -> None:
+        self.write_state("UPL-5", "implement")
+
+        self.assertNotIn("brief", self.run_inventory("UPL-5"))
+
     def test_continuable_state_with_missing_work_root_is_ambiguous(self) -> None:
         self.write_state("UPL-7", "accept")
         git(self.service, "worktree", "remove", str(self.worktree))
